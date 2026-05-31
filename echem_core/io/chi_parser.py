@@ -1,0 +1,275 @@
+"""CHI Instruments 电化学工作站数据文件解析器。
+
+支持 CHI 600/700/1100 系列导出的 .txt 文件格式。
+"""
+
+import numpy as np
+import os
+import hashlib
+from typing import Optional, Tuple
+
+from echem_core.model import Measurement, Technique
+
+
+def parse_chi_file(filepath: str, encoding: str = None) -> Measurement:
+    """解析 CHI Instruments 导出的 .txt 文件。
+
+    CHI .txt 文件格式特征：
+        - 文件头包含 "CHI Instruments" 标识
+        - 包含 "Potential/V", "Current/A", "Time/sec" 等列名
+        - 数据以表格形式在文件头之后
+
+    Args:
+        filepath: CHI .txt 文件路径。
+        encoding: 文件编码，为 None 时自动检测（优先 UTF-8，回退 GBK）。
+
+    Returns:
+        包含原始数据的 Measurement 对象。
+
+    Raises:
+        ValueError: 文件格式无法识别或缺少必要数据列。
+        FileNotFoundError: 文件不存在。
+    """
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"文件不存在: {filepath}")
+
+    # 计算文件哈希
+    sha256 = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        sha256.update(f.read())
+    file_hash = sha256.hexdigest()
+
+    # 检测编码
+    if encoding is None:
+        encodings = ["utf-8", "gbk", "gb2312", "latin-1"]
+    else:
+        encodings = [encoding]
+
+    content = None
+    used_encoding = None
+    for enc in encodings:
+        try:
+            with open(filepath, "r", encoding=enc) as f:
+                content = f.read()
+            used_encoding = enc
+            break
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+
+    if content is None:
+        raise ValueError(f"无法解码文件: {filepath}。请指定 encoding 参数。")
+
+    lines = content.splitlines()
+
+    # 定位表头行和数据起始行
+    header_row = None
+    data_start = None
+    column_names = []
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # 检查是否包含 CHI Instruments 标识
+        if "CHI" in stripped and ("Instruments" in stripped or "Electrochemical" in stripped):
+            continue
+        # 检测列名行：包含 Potential 或 Current 或 Time
+        if any(kw in stripped.lower() for kw in ["potential", "current", "time", "frequency"]):
+            header_row = i
+            column_names = [c.strip() for c in stripped.replace("\t", " ").split(",")]
+            column_names = [c for c in column_names if c]
+            column_names = [c.split("/")[0].strip() if "/" in c else c.strip() for c in column_names]
+            data_start = i + 1
+            # 跳过空行
+            while data_start < len(lines) and not lines[data_start].strip():
+                data_start += 1
+            break
+
+    if header_row is None:
+        # 尝试自动检测：找到第一行连续数字数据
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            parts = stripped.replace("\t", " ").split()
+            try:
+                nums = [float(p) for p in parts]
+                if len(nums) >= 2:
+                    # 生成通用列名
+                    column_names = [f"Column_{j}" for j in range(len(nums))]
+                    data_start = i
+                    break
+            except ValueError:
+                continue
+
+    if data_start is None:
+        raise ValueError(f"无法识别 CHI 文件格式: {filepath}")
+
+    # 解析数据
+    data_lines = []
+    for line in lines[data_start:]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # 尝试逗号分隔、制表符分隔、空格分隔
+        parts = None
+        if "," in stripped:
+            parts = [p.strip() for p in stripped.split(",") if p.strip()]
+        if parts is None or len(parts) < 2:
+            parts = stripped.replace(",", " ").split()
+        try:
+            nums = [float(p) for p in parts]
+            data_lines.append(nums)
+        except ValueError:
+            continue
+
+    if not data_lines:
+        raise ValueError(f"文件中未找到数值数据: {filepath}")
+
+    data = np.array(data_lines)
+
+    # 识别技术类型
+    technique = _detect_technique(column_names, data)
+
+    # 提取电位和电流列
+    potential, current, time = _extract_columns(column_names, data, technique)
+
+    # 解析元数据
+    metadata = _parse_chi_metadata(lines, filepath)
+
+    return Measurement(
+        technique=technique,
+        potential=potential,
+        current=current,
+        time=time,
+        metadata=metadata,
+        file_hash=file_hash,
+    )
+
+
+def _detect_technique(
+    column_names: list, data: np.ndarray
+) -> Technique:
+    """根据列名和数据特征检测电化学技术类型。"""
+    col_lower = [c.lower() for c in column_names]
+
+    has_frequency = any("freq" in c for c in col_lower)
+    has_impedance = any(k in c for k in ("z'", "z\"", "z_real", "z_imag", "impedance") for c in col_lower)
+
+    if has_frequency and has_impedance:
+        return Technique.EIS
+
+    if "time" in col_lower and "potential" not in col_lower:
+        # 没有电位列，只有电流 vs 时间
+        return Technique.CA
+
+    # 默认基于数据特征判断：如果电位单调变化 -> LSV，否则可能是 CV
+    if data.shape[1] >= 1:
+        potential = data[:, 0]
+        diff = np.diff(potential)
+        sign_changes = np.sum(diff[:-1] * diff[1:] < 0)
+        if sign_changes > 1:
+            return Technique.CV
+        else:
+            return Technique.LSV
+
+    return Technique.LSV
+
+
+def _extract_columns(
+    column_names: list, data: np.ndarray, technique: Technique
+) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+    """从数据矩阵中提取电位、电流和时间列。"""
+    col_lower = [c.lower() for c in column_names]
+    ncols = data.shape[1]
+
+    potential = None
+    current = None
+    time = None
+
+    # 找电位列
+    for i, c in enumerate(col_lower):
+        if i >= ncols:
+            break
+        if any(k in c for k in ("potential", "volt", "e / v", "e (v)", "potent")):
+            potential = data[:, i]
+            break
+    if potential is None and ncols >= 1:
+        potential = data[:, 0]  # 默认第一列为电位
+
+    # 找电流列
+    for i, c in enumerate(col_lower):
+        if i >= ncols:
+            break
+        if any(k in c for k in ("current", "ampere", "i / a", "i (a)", "curr")):
+            current = data[:, i]
+            break
+    if current is None and ncols >= 2:
+        current = data[:, 1]  # 默认第二列为电流
+    elif current is None and ncols >= 1:
+        current = data[:, 0]
+
+    # 找时间列
+    for i, c in enumerate(col_lower):
+        if i >= ncols:
+            break
+        if any(k in c for k in ("time", "t / s", "t (s)", "sec")):
+            time = data[:, i]
+            break
+    if time is None and ncols >= 3:
+        time = data[:, 2]
+
+    if potential is None or current is None:
+        raise ValueError(f"无法从列名 {column_names} 中识别电位或电流列")
+
+    return potential, current, time
+
+
+def _parse_chi_metadata(lines: list, filepath: str) -> dict:
+    """从文件头解析元数据。"""
+    metadata = {
+        "sample_name": os.path.basename(filepath),
+        "date": None,
+        "instrument": "CHI Instruments",
+    }
+
+    for line in lines[:50]:
+        lower = line.lower()
+        if "date" in lower or "time" in lower:
+            metadata["date"] = line.strip()
+        if "electrode" in lower:
+            parts = line.split(":")
+            if len(parts) > 1:
+                metadata["reference_electrode"] = parts[1].strip()
+        if "rpm" in lower or "rotation" in lower:
+            import re
+            match = re.search(r"(\d+)", line)
+            if match:
+                metadata["rotation_rpm"] = float(match.group(1))
+        if "scan" in lower and ("rate" in lower or "speed" in lower):
+            import re
+            match = re.search(r"(\d+\.?\d*)", line)
+            if match:
+                metadata["scan_rate"] = float(match.group(1))
+
+    return metadata
+
+
+def parse_folder(folder_path: str) -> list:
+    """批量解析文件夹中所有 CHI .txt 文件。
+
+    Args:
+        folder_path: 包含 CHI 数据文件的文件夹路径。
+
+    Returns:
+        Measurement 对象列表。
+    """
+    measurements = []
+    for fname in sorted(os.listdir(folder_path)):
+        if fname.lower().endswith((".txt", ".csv")):
+            try:
+                m = parse_chi_file(os.path.join(folder_path, fname))
+                measurements.append(m)
+            except Exception as e:
+                print(f"跳过 {fname}: {e}")
+    return measurements
