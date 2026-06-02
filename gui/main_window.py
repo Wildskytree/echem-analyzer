@@ -16,13 +16,14 @@ from gui.tabs.eis_tab import EISTab
 from gui.tabs.stability_tab import StabilityTab
 from gui.tabs.batch_tab import BatchTab
 from gui.tabs.project_tab import ProjectTab
+from gui.app_info import APP_DISPLAY_VERSION, APP_FULL_NAME, APP_NAME, APP_ORGANIZATION
 
 
 class MainWindow(QMainWindow):
     """Echem Analyzer 主窗口。"""
 
-    APP_NAME = "Echem Analyzer — 电化学数据分析工具"
-    APP_VERSION = "0.1.0"
+    APP_NAME = APP_FULL_NAME
+    APP_VERSION = APP_DISPLAY_VERSION
 
     def __init__(self):
         super().__init__()
@@ -313,18 +314,39 @@ class MainWindow(QMainWindow):
             event.ignore()
 
 
-def run_app():
+def run_app(app=None, splash=None):
     """启动应用的主函数。"""
     # HiDPI 支持
     os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
     os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "1")
 
-    app = QApplication(sys.argv)
-    app.setApplicationName("Echem Analyzer")
-    app.setOrganizationName("Echem Analyzer Team")
+    created_app = app is None
+    if app is None:
+        app = QApplication(sys.argv)
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_DISPLAY_VERSION)
+    app.setOrganizationName(APP_ORGANIZATION)
     app.setStyle(QStyleFactory.create("Fusion"))
 
-    window = MainWindow()
-    window.show()
+    if splash is None:
+        from gui.splash import SplashScreen
 
-    sys.exit(app.exec())
+        splash = SplashScreen(APP_NAME, APP_DISPLAY_VERSION)
+        splash.show()
+        splash.show_progress(20, "初始化界面...")
+        app.processEvents()
+
+    splash.show_progress(55, "构建主窗口...")
+    app.processEvents()
+    window = MainWindow()
+    splash.show_progress(90, "准备显示...")
+    app.processEvents()
+    window.show()
+    splash.show_progress(100, "启动完成")
+    app.processEvents()
+    splash.finish(window)
+
+    exit_code = app.exec()
+    if created_app:
+        sys.exit(exit_code)
+    sys.exit(exit_code)

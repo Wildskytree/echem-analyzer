@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                QSplitter)
 from PySide6.QtCore import Qt
 
+from gui.app_info import APP_DISPLAY_VERSION
 from gui.widgets.analysis_common import scrollable_panel
 
 
@@ -65,7 +66,7 @@ class ProjectTab(QWidget):
         self.txt_info.setReadOnly(True)
         self.txt_info.setHtml("""
         <h2>Echem Analyzer</h2>
-        <p><b>版本:</b> 0.1.0</p>
+        <p><b>版本:</b> {version}</p>
         <p><b>描述:</b> 电化学数据分析工具</p>
         <p><b>技术栈:</b> PySide6 + Matplotlib + NumPy/SciPy</p>
         <p><b>支持的分析:</b></p>
@@ -78,7 +79,7 @@ class ProjectTab(QWidget):
         </ul>
         <p><b>主要数据格式:</b> CHI Instruments (.txt), CSV</p>
         <p><b>快捷键:</b> Ctrl+O 导入文件, Ctrl+S 保存项目</p>
-        """)
+        """.format(version=APP_DISPLAY_VERSION))
         info_layout.addWidget(self.txt_info)
         right_layout.addWidget(info_group)
 
@@ -105,7 +106,7 @@ class ProjectTab(QWidget):
             return
         try:
             data = {
-                "version": "0.1.0",
+                "version": APP_DISPLAY_VERSION,
                 "timestamp": datetime.now().isoformat(),
                 "session_log": self._session_log,
             }
@@ -156,6 +157,7 @@ tr:nth-child(even) {{ background-color: #f2f2f2; }}
 </style></head>
 <body>
 <h1>Echem Analyzer 分析报告</h1>
+<p>软件版本: {APP_DISPLAY_VERSION}</p>
 <p>生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
 <h2>会话历史</h2>
 <ul>

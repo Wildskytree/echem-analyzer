@@ -5,6 +5,8 @@ import os
 import sys
 from typing import List, Optional
 
+from echem_core.version import __display_version__
+
 
 def main(argv: Optional[List[str]] = None) -> int:
     """Echem Analyzer 命令行入口。
@@ -20,7 +22,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         prog="echem",
         description="Echem Analyzer - 电化学数据处理工具",
     )
-    parser.add_argument("--version", action="version", version="echem-analyzer 0.1.0")
+    parser.add_argument("--version", action="version", version=f"echem-analyzer {__display_version__}")
 
     subparsers = parser.add_subparsers(dest="command", help="可用命令")
 

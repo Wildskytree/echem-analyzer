@@ -164,6 +164,19 @@ class Measurement:
         ]
         return measurement
 
+    def set_technique(self, technique: Technique, manual: bool = False) -> None:
+        """Update the measurement technique while preserving raw data."""
+
+        new_technique = Technique(technique)
+        old_technique = self.technique
+        if old_technique == new_technique:
+            return
+
+        self.technique = new_technique
+        if manual:
+            self._metadata.setdefault("original_technique", old_technique.value)
+            self._metadata["technique_override"] = new_technique.value
+
     def __repr__(self) -> str:
         """返回便于调试的对象表示。"""
 

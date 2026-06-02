@@ -33,6 +33,12 @@ class MeasurementTreeWidget(QTreeWidget):
     def add_measurement(self, measurement):
         """添加一个 Measurement 对象到列表。"""
         item = QTreeWidgetItem(self)
+        self._populate_item(item, measurement)
+        self._measurements[id(measurement)] = measurement
+        # 存储 ID 以便检索
+        item.setData(0, Qt.UserRole, id(measurement))
+
+    def _populate_item(self, item, measurement):
         meta = measurement.metadata
         name = meta.get("sample_name", "未知")
         tech = measurement.technique.value if hasattr(measurement.technique, 'value') else str(measurement.technique)
@@ -44,9 +50,22 @@ class MeasurementTreeWidget(QTreeWidget):
         item.setText(2, str(points))
         item.setText(3, processed)
         item.setText(4, str(date)[:20] if date else "")
-        self._measurements[id(measurement)] = measurement
-        # 存储 ID 以便检索
-        item.setData(0, Qt.UserRole, id(measurement))
+
+    def measurement_for_item(self, item):
+        """返回列表项对应的 Measurement。"""
+        if item is None:
+            return None
+        mid = item.data(0, Qt.UserRole)
+        return self._measurements.get(mid)
+
+    def refresh_measurement(self, measurement):
+        """刷新指定 Measurement 所在行的显示。"""
+        target_id = id(measurement)
+        for i in range(self.topLevelItemCount()):
+            item = self.topLevelItem(i)
+            if item.data(0, Qt.UserRole) == target_id:
+                self._populate_item(item, measurement)
+                break
 
     def select_measurement(self, measurement):
         """选中指定 Measurement。"""
@@ -66,11 +85,9 @@ class MeasurementTreeWidget(QTreeWidget):
         items = self.selectedItems()
         result = []
         for item in items:
-            mid = item.data(0, Qt.UserRole)
-            for mid_key, m in self._measurements.items():
-                if mid_key == mid:
-                    result.append(m)
-                    break
+            measurement = self.measurement_for_item(item)
+            if measurement is not None:
+                result.append(measurement)
         return result
 
     def get_all_measurements(self):

@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                QFileDialog, QTabWidget, QTableWidget,
                                QTableWidgetItem, QCheckBox,
                                QListWidget, QListWidgetItem, QLineEdit,
-                               QSizePolicy)
+                               QSizePolicy, QMenu)
 from PySide6.QtCore import Qt
 
 from gui.widgets.plot_widget import PlotWidget
@@ -96,6 +96,8 @@ class CVTab(QWidget):
         cdl_layout.addWidget(QLabel("选择不同扫速的 CV 数据用于 Cdl 计算:"))
         self.cdl_list = QListWidget()
         self.cdl_list.setSelectionMode(QListWidget.ExtendedSelection)
+        self.cdl_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.cdl_list.customContextMenuRequested.connect(self._show_cdl_context_menu)
         cdl_layout.addWidget(QLabel("(从数据浏览器拖入或点击添加)"))
         self.btn_add_cdl = QPushButton("➕ 添加当前 CV 到 Cdl 列表")
         self.btn_add_cdl.clicked.connect(self._add_to_cdl_list)
@@ -103,6 +105,8 @@ class CVTab(QWidget):
         self.btn_add_all_cdl.clicked.connect(
             lambda _checked=False: self._add_all_to_cdl_list(show_message=True)
         )
+        self.btn_remove_cdl = QPushButton("❌ 删除选中 CV")
+        self.btn_remove_cdl.clicked.connect(self._remove_selected_cdl)
         self.btn_clear_cdl = QPushButton("🗑️ 清空 Cdl 列表")
         self.btn_clear_cdl.clicked.connect(self._clear_cdl_list)
         self.btn_calc_cdl = QPushButton("📊 计算 Cdl / ECSA")
@@ -111,6 +115,7 @@ class CVTab(QWidget):
         cdl_layout.addWidget(self.cdl_list)
         cdl_layout.addWidget(self.btn_add_cdl)
         cdl_layout.addWidget(self.btn_add_all_cdl)
+        cdl_layout.addWidget(self.btn_remove_cdl)
         cdl_layout.addWidget(self.btn_clear_cdl)
         cdl_layout.addWidget(self.btn_calc_cdl)
 
@@ -356,13 +361,46 @@ class CVTab(QWidget):
         self._cdl_measurements.clear()
         self.cdl_list.clear()
 
+    def _remove_selected_cdl(self):
+        """从 Cdl 计算列表中删除选中的 CV。"""
+        selected_items = self.cdl_list.selectedItems()
+        if not selected_items and self.cdl_list.currentItem() is not None:
+            selected_items = [self.cdl_list.currentItem()]
+        if not selected_items:
+            return
+
+        removed_ids = {item.data(Qt.UserRole) for item in selected_items}
+        self._cdl_measurements = [
+            measurement
+            for measurement in self._cdl_measurements
+            if id(measurement) not in removed_ids
+        ]
+        self._rebuild_cdl_list()
+
+    def _show_cdl_context_menu(self, pos):
+        item = self.cdl_list.itemAt(pos)
+        if item is None:
+            return
+        if not item.isSelected():
+            self.cdl_list.clearSelection()
+            item.setSelected(True)
+            self.cdl_list.setCurrentItem(item)
+
+        menu = QMenu(self)
+        act_remove = menu.addAction("❌ 删除此 CV")
+        action = menu.exec(self.cdl_list.mapToGlobal(pos))
+        if action == act_remove:
+            self._remove_selected_cdl()
+
     def _rebuild_cdl_list(self):
         self.cdl_list.clear()
         self._sort_cdl_measurements()
         for measurement in self._cdl_measurements:
             name = measurement.metadata.get("sample_name", "未知")
             sr = self._scan_rate_for_display(measurement)
-            self.cdl_list.addItem(QListWidgetItem(f"{name} (扫速: {sr})"))
+            item = QListWidgetItem(f"{name} (扫速: {sr})")
+            item.setData(Qt.UserRole, id(measurement))
+            self.cdl_list.addItem(item)
 
     def _calc_cdl(self):
         """计算 Cdl 和 ECSA。"""

@@ -14,6 +14,34 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
+def _run_gui():
+    """Create the QApplication early so the splash screen appears before imports."""
+    os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
+    os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "1")
+
+    from PySide6.QtWidgets import QApplication, QStyleFactory
+
+    from gui.app_info import APP_DISPLAY_VERSION, APP_NAME, APP_ORGANIZATION
+    from gui.splash import SplashScreen
+
+    app = QApplication(sys.argv)
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_DISPLAY_VERSION)
+    app.setOrganizationName(APP_ORGANIZATION)
+    app.setStyle(QStyleFactory.create("Fusion"))
+
+    splash = SplashScreen(APP_NAME, APP_DISPLAY_VERSION)
+    splash.show()
+    splash.show_progress(10, "初始化应用...")
+    app.processEvents()
+
+    splash.show_progress(25, "加载分析模块...")
+    app.processEvents()
+    from gui.main_window import run_app
+
+    run_app(app=app, splash=splash)
+
+
 def main():
     if "--cli" in sys.argv:
         # 启动 CLI 模式
@@ -22,8 +50,7 @@ def main():
         sys.exit(cli_main())
     else:
         # 启动 GUI 模式
-        from gui.main_window import run_app
-        run_app()
+        _run_gui()
 
 
 if __name__ == "__main__":

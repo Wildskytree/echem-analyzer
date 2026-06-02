@@ -14,6 +14,7 @@ from gui.widgets.analysis_common import measurement_label, measurement_name, tec
 from echem_core.io.chi_parser import parse_chi_file
 from echem_core.io.corrtest_parser import parse_corrtest_file
 from echem_core.io.csv_parser import parse_csv
+from echem_core.model import Technique
 
 
 def _parse_measurement_file(filepath):
@@ -504,16 +505,50 @@ class DataBrowserTab(QWidget):
         item = self.tree.itemAt(pos)
         if not item:
             return
+        measurement = self.tree.measurement_for_item(item)
+        if measurement is None:
+            return
+        if not item.isSelected():
+            self.tree.clearSelection()
+            item.setSelected(True)
+            self.tree.setCurrentItem(item)
+
         menu = QMenu(self)
         act_process = menu.addAction("⚙️ 处理...")
         act_plot = menu.addAction("📈 绘图...")
+        menu.addSeparator()
+        type_menu = menu.addMenu("修改数据类型")
+        type_actions = {}
+        current_tech = technique_value(measurement)
+        for technique in Technique:
+            action = type_menu.addAction(technique.value)
+            action.setCheckable(True)
+            action.setChecked(technique.value == current_tech)
+            type_actions[action] = technique
         menu.addSeparator()
         act_export = menu.addAction("💾 导出数据")
         menu.addSeparator()
         act_delete = menu.addAction("❌ 删除")
         action = menu.exec(self.tree.mapToGlobal(pos))
-        if action == act_delete:
+        if action in type_actions:
+            self._change_measurement_technique(measurement, type_actions[action])
+        elif action == act_process or action == act_plot:
+            tech = technique_value(measurement)
+            self.analysis_requested.emit("STABILITY" if tech in ("CA", "CP") else tech)
+        elif action == act_delete:
             self._delete_selected()
+
+    def _change_measurement_technique(self, measurement, technique):
+        old_tech = technique_value(measurement)
+        if old_tech == technique.value:
+            return
+        measurement.set_technique(technique, manual=True)
+        self.tree.refresh_measurement(measurement)
+        self._show_preview(measurement)
+        self._refresh_quick_start()
+        self.measurements_changed.emit(self.get_all_measurements())
+        self.tree.select_measurement(measurement)
+        self.tree.measurement_selected.emit(measurement)
 
     def get_all_measurements(self):
         return list(self._measurements)

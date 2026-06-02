@@ -63,6 +63,41 @@ def test_corrtest_potential_step_is_chronoamperometry(tmp_path):
     assert parse_chi_file(str(path)).technique == Technique.CA
 
 
+def test_corrtest_galstatic_is_chronopotentiometry(tmp_path):
+    path = _write_csstudio_file(
+        tmp_path,
+        "ID_GalStatic",
+        "ExpParmas:ExpType=ID_GalStatic&-&FileName=恒电流1A.txt\r\n"
+        "Current:1 A",
+        [
+            (1.49420, 0.500231, 0.0),
+            (1.47263, 0.500273, 1.0),
+            (1.48916, 0.500249, 2.0),
+            (1.49509, 0.500252, 3.0),
+            (1.50354, 0.500252, 4.0),
+            (1.51313, 0.500254, 5.0),
+        ],
+    )
+
+    assert parse_corrtest_file(str(path)).technique == Technique.CP
+    assert parse_chi_file(str(path)).technique == Technique.CP
+
+
+def test_chi_constant_current_time_series_is_chronopotentiometry(tmp_path):
+    path = tmp_path / "galvanostatic.txt"
+    path.write_text(
+        "Galvanostatic constant current test\n"
+        "Potential/V, Current/A, Time/sec\n"
+        "1.49420, 0.500231, 0.0\n"
+        "1.47263, 0.500273, 1.0\n"
+        "1.48916, 0.500249, 2.0\n"
+        "1.49509, 0.500252, 3.0\n",
+        encoding="utf-8",
+    )
+
+    assert parse_chi_file(str(path)).technique == Technique.CP
+
+
 def test_chi_eis_with_ac_impedance_header_is_detected(tmp_path):
     path = tmp_path / "chi_eis.txt"
     path.write_text(

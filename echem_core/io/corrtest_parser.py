@@ -27,6 +27,10 @@ _EXP_TYPE_MAP = {
     "ID_POTENTIALSTEP": Technique.CA,
     "ID_CHRONOAMPEROMETRY": Technique.CA,
     "ID_CHRONOPOTENTIOMETRY": Technique.CP,
+    "ID_GALSTATIC": Technique.CP,
+    "ID_GALVANOSTATIC": Technique.CP,
+    "ID_GCD": Technique.CP,
+    "ID_CHARGE_DISCHARGE": Technique.CP,
 }
 
 
@@ -67,6 +71,14 @@ def parse_corrtest_file(filepath: str) -> Measurement:
         metadata["z_imag"] = time.tolist()
     else:
         potential, current, time, column_mapping = _extract_data_columns(headers, data)
+        stability_technique = _infer_stability_technique_from_series(
+            potential,
+            current,
+            time,
+            metadata,
+        )
+        if stability_technique is not None and technique in (None, Technique.LSV, Technique.CV):
+            technique = stability_technique
     if technique is None:
         technique = _infer_technique_from_potential(potential)
     metadata.pop("_technique", None)
@@ -231,7 +243,7 @@ def _technique_from_exp_type(exp_type: str) -> Optional[Technique]:
         return Technique.EIS
     if any(token in exp_type for token in ("POTSTEP", "POTSQUAREWAVE", "CHRONOAMP", "I-T", "IT")):
         return Technique.CA
-    if any(token in exp_type for token in ("CHRONOPOT", "CP")):
+    if any(token in exp_type for token in ("CHRONOPOT", "GALSTATIC", "GALVANOSTATIC", "GCD", "CP")):
         return Technique.CP
     return None
 
@@ -440,6 +452,111 @@ def _find_current_column(headers: List[str], default: int) -> int:
         if header.startswith("i(") or "current" in header:
             return idx
     return default
+
+
+def _text_indicates_cp(text: str) -> bool:
+    lower = text.lower()
+    return any(
+        token in lower
+        for token in (
+            "id_galstatic",
+            "galvanostatic",
+            "galstatic",
+            "constant current",
+            "chronopotentiometry",
+            "恒电流",
+            "计时电位",
+        )
+    )
+
+
+def _text_indicates_ca(text: str) -> bool:
+    lower = text.lower()
+    return any(
+        token in lower
+        for token in (
+            "chronoamperometry",
+            "potentiostatic",
+            "constant potential",
+            "potential step",
+            "potstep",
+            "i-t",
+            "i/t",
+            "恒电位",
+            "计时电流",
+        )
+    )
+
+
+def _is_monotonic_time_axis(values: Optional[np.ndarray]) -> bool:
+    if values is None or len(values) < 3:
+        return False
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size < 3:
+        return False
+    diff = np.diff(arr)
+    return bool(np.all(diff > 0) or np.all(diff < 0))
+
+
+def _is_nearly_constant_signal(
+    values: np.ndarray,
+    rel_tol: float = 5e-3,
+    abs_tol: float = 1e-10,
+) -> bool:
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size < 3:
+        return False
+    span = float(np.max(arr) - np.min(arr))
+    scale = max(float(np.max(np.abs(arr))), abs(float(np.nanmean(arr))), 1e-12)
+    return span <= abs_tol or span / scale <= rel_tol
+
+
+def _looks_like_potential_sweep(potential: np.ndarray) -> bool:
+    arr = np.asarray(potential, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size < 4:
+        return False
+    span = float(np.max(arr) - np.min(arr))
+    if span <= 0 or not np.isfinite(span):
+        return False
+    diff = np.diff(arr)
+    tol = max(span * 1e-4, 1e-12)
+    signs = np.sign(diff[np.abs(diff) > tol])
+    if signs.size < max(3, int(0.2 * diff.size)):
+        return False
+    sign_changes = int(np.sum(signs[:-1] * signs[1:] < 0))
+    dominant_fraction = max(
+        np.count_nonzero(signs > 0),
+        np.count_nonzero(signs < 0),
+    ) / signs.size
+    return sign_changes <= 1 and dominant_fraction >= 0.85
+
+
+def _infer_stability_technique_from_series(
+    potential: np.ndarray,
+    current: np.ndarray,
+    time: Optional[np.ndarray],
+    metadata: dict,
+) -> Optional[Technique]:
+    if not _is_monotonic_time_axis(time):
+        return None
+
+    metadata_text = " ".join(
+        str(metadata.get(key, ""))
+        for key in ("exp_type", "_corrtest_metadata", "_corrtest_header_error")
+    )
+    if _text_indicates_cp(metadata_text):
+        return Technique.CP
+    if _text_indicates_ca(metadata_text):
+        return Technique.CA
+
+    if _is_nearly_constant_signal(current) and not _looks_like_potential_sweep(potential):
+        return Technique.CP
+    if _is_nearly_constant_signal(potential, rel_tol=1e-3, abs_tol=1e-6):
+        return Technique.CA
+    return None
 
 
 def _infer_technique_from_potential(potential: np.ndarray) -> Technique:

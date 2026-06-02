@@ -276,6 +276,141 @@ def _content_indicates_eis(lines: list) -> bool:
     return False
 
 
+def _content_indicates_cp(lines: Optional[list]) -> bool:
+    if not lines:
+        return False
+    for line in lines[:120]:
+        lower = line.strip().lower()
+        if any(
+            token in lower
+            for token in (
+                "chronopotentiometry",
+                "galvanostatic",
+                "galstatic",
+                "constant current",
+                "恒电流",
+                "计时电位",
+            )
+        ):
+            return True
+    return False
+
+
+def _content_indicates_ca(lines: Optional[list]) -> bool:
+    if not lines:
+        return False
+    for line in lines[:120]:
+        lower = line.strip().lower()
+        if any(
+            token in lower
+            for token in (
+                "chronoamperometry",
+                "potentiostatic",
+                "constant potential",
+                "potential step",
+                "potstep",
+                "i-t",
+                "i/t",
+                "恒电位",
+                "计时电流",
+            )
+        ):
+            return True
+    return False
+
+
+def _column_index(col_lower: list, predicate, default: Optional[int], ncols: int) -> Optional[int]:
+    for idx, column in enumerate(col_lower):
+        if idx >= ncols:
+            break
+        if predicate(column):
+            return idx
+    if default is not None and default < ncols:
+        return default
+    return None
+
+
+def _is_monotonic_time_axis(values: Optional[np.ndarray]) -> bool:
+    if values is None or len(values) < 3:
+        return False
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size < 3:
+        return False
+    diff = np.diff(arr)
+    return bool(np.all(diff > 0) or np.all(diff < 0))
+
+
+def _is_nearly_constant_signal(
+    values: np.ndarray,
+    rel_tol: float = 5e-3,
+    abs_tol: float = 1e-10,
+) -> bool:
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size < 3:
+        return False
+    span = float(np.max(arr) - np.min(arr))
+    scale = max(float(np.max(np.abs(arr))), abs(float(np.nanmean(arr))), 1e-12)
+    return span <= abs_tol or span / scale <= rel_tol
+
+
+def _looks_like_potential_sweep(potential: np.ndarray) -> bool:
+    arr = np.asarray(potential, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size < 4:
+        return False
+    span = float(np.max(arr) - np.min(arr))
+    if span <= 0 or not np.isfinite(span):
+        return False
+    diff = np.diff(arr)
+    tol = max(span * 1e-4, 1e-12)
+    signs = np.sign(diff[np.abs(diff) > tol])
+    if signs.size < max(3, int(0.2 * diff.size)):
+        return False
+    sign_changes = int(np.sum(signs[:-1] * signs[1:] < 0))
+    dominant_fraction = max(
+        np.count_nonzero(signs > 0),
+        np.count_nonzero(signs < 0),
+    ) / signs.size
+    return sign_changes <= 1 and dominant_fraction >= 0.85
+
+
+def _infer_stability_technique(
+    column_names: list,
+    data: np.ndarray,
+    lines: Optional[list],
+) -> Optional[Technique]:
+    """Detect CA/CP time-series that also contain E/I/T columns."""
+    if data.shape[1] < 3:
+        return None
+
+    col_lower = [_normalize_column_name(c) for c in column_names]
+    ncols = data.shape[1]
+    potential_idx = _column_index(col_lower, _is_potential_column, 0, ncols)
+    current_idx = _column_index(col_lower, _is_current_column, 1, ncols)
+    time_idx = _column_index(col_lower, _is_time_column, 2, ncols)
+
+    if time_idx is None or not _is_monotonic_time_axis(data[:, time_idx]):
+        return None
+
+    if _content_indicates_cp(lines):
+        return Technique.CP
+    if _content_indicates_ca(lines):
+        return Technique.CA
+
+    if potential_idx is None or current_idx is None:
+        return None
+
+    potential = data[:, potential_idx]
+    current = data[:, current_idx]
+    if _is_nearly_constant_signal(current) and not _looks_like_potential_sweep(potential):
+        return Technique.CP
+    if _is_nearly_constant_signal(potential, rel_tol=1e-3, abs_tol=1e-6):
+        return Technique.CA
+    return None
+
+
 def _generic_eis_columns(count: int) -> list:
     names = ["Freq/Hz", "Z'/ohm", 'Z"/ohm', "Z/ohm", "Phase/deg"]
     if count <= len(names):
@@ -317,6 +452,10 @@ def _detect_technique(
         return Technique.CA
     if has_time and has_potential and not has_current:
         return Technique.CP
+    if has_time and has_potential and has_current:
+        stability_technique = _infer_stability_technique(column_names, data, lines)
+        if stability_technique is not None:
+            return stability_technique
 
     # 默认基于数据特征判断：如果电位单调变化 -> LSV，否则可能是 CV
     if data.shape[1] >= 1:
