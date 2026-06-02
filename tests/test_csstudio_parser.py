@@ -1,9 +1,12 @@
 import base64
 import gzip
 
+import numpy as np
+
+from echem_core.analysis.cv import calc_cdl, detect_scan_rate
 from echem_core.io.chi_parser import parse_chi_file
 from echem_core.io.corrtest_parser import parse_corrtest_file
-from echem_core.model import Technique
+from echem_core.model import Measurement, Technique
 
 
 def _write_csstudio_file(tmp_path, exp_type, metadata_body, rows):
@@ -58,3 +61,76 @@ def test_corrtest_potential_step_is_chronoamperometry(tmp_path):
 
     assert parse_corrtest_file(str(path)).technique == Technique.CA
     assert parse_chi_file(str(path)).technique == Technique.CA
+
+
+def test_chi_eis_with_ac_impedance_header_is_detected(tmp_path):
+    path = tmp_path / "chi_eis.txt"
+    path.write_text(
+        "Dec. 9, 2025   01:15:24\r\n"
+        "A.C. Impedance\r\n"
+        "Instrument Model:  CHI660E\r\n"
+        "Quiet Time (sec) = 2\r\n"
+        "\r\n"
+        "Freq/Hz, Z'/ohm, Z\"/ohm, Z/ohm, Phase/deg\r\n"
+        "9.995e+3, 5.589e-2, -1.640e-1, 1.733e-1, -71.2\r\n"
+        "1.000e+0, 6.266e-2, -3.834e-3, 6.278e-2, -3.5\r\n",
+        encoding="utf-8",
+    )
+
+    measurement = parse_chi_file(str(path))
+
+    assert measurement.technique == Technique.EIS
+    assert measurement.raw_potential[0] == 9995.0
+    assert measurement.raw_current[0] == 0.05589
+    assert measurement.raw_time[0] == -0.164
+    assert measurement.metadata["frequency"][0] == 9995.0
+    assert measurement.metadata["date"].startswith("Dec. 9, 2025")
+
+
+def test_corrtest_parser_accepts_comma_separated_eis_headers(tmp_path):
+    path = tmp_path / "comma_eis.txt"
+    path.write_text(
+        "A.C. Impedance\n"
+        "Freq/Hz, Z'/ohm, Z\"/ohm, Z/ohm, Phase/deg\n"
+        "1000, 1.5, -0.2, 1.513, -7.6\n"
+        "10, 2.0, -0.4, 2.04, -11.3\n",
+        encoding="utf-8",
+    )
+
+    measurement = parse_corrtest_file(str(path))
+
+    assert measurement.technique == Technique.EIS
+    assert measurement.raw_potential.tolist() == [1000.0, 10.0]
+    assert measurement.raw_current.tolist() == [1.5, 2.0]
+    assert measurement.raw_time.tolist() == [-0.2, -0.4]
+
+
+def _cv_for_scan_rate(scan_rate):
+    forward_potential = np.linspace(0.0, 1.0, 51)
+    reverse_potential = np.linspace(1.0, 0.0, 51)[1:]
+    potential = np.concatenate([forward_potential, reverse_potential])
+    time = np.concatenate([
+        np.linspace(0.0, 1.0 / scan_rate, 51),
+        np.linspace(1.0 / scan_rate + 1.0 / (scan_rate * 50), 2.0 / scan_rate, 50),
+    ])
+    current = np.concatenate([
+        np.full(forward_potential.size, scan_rate * 2.0e-3),
+        np.full(reverse_potential.size, -scan_rate * 2.0e-3),
+    ])
+    return Measurement(
+        technique=Technique.CV,
+        potential=potential,
+        current=current,
+        time=time,
+        metadata={"sample_name": f"cv-{scan_rate:g}.txt"},
+    )
+
+
+def test_cdl_detects_and_sorts_scan_rates_from_cv_time_axis():
+    measurements = [_cv_for_scan_rate(0.03), _cv_for_scan_rate(0.01), _cv_for_scan_rate(0.02)]
+
+    assert np.isclose(detect_scan_rate(measurements[0]), 0.03)
+
+    _cdl, _r2, _df_dv, scan_rates = calc_cdl(measurements)
+
+    assert np.allclose(scan_rates, [0.01, 0.02, 0.03])

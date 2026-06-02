@@ -6,6 +6,7 @@
 import numpy as np
 import os
 import hashlib
+import re
 from typing import Optional, Tuple
 
 from echem_core.model import Measurement, Technique
@@ -77,8 +78,8 @@ def parse_chi_file(filepath: str, encoding: str = None) -> Measurement:
         # 检查是否包含 CHI Instruments 标识
         if "CHI" in stripped and ("Instruments" in stripped or "Electrochemical" in stripped):
             continue
-        # 检测列名行：包含 Potential 或 Current 或 Time
-        if any(kw in stripped.lower() for kw in ["potential", "current", "time", "frequency"]):
+        # 检测真正的数据表头行，避免把 "Quiet Time (sec) = ..." 等元数据误作表头。
+        if _is_data_header_line(stripped):
             header_row = i
             column_names = _split_header_columns(stripped)
             data_start = i + 1
@@ -97,8 +98,11 @@ def parse_chi_file(filepath: str, encoding: str = None) -> Measurement:
             try:
                 nums = [float(p) for p in parts]
                 if len(nums) >= 2:
-                    # 生成通用列名
-                    column_names = [f"Column_{j}" for j in range(len(nums))]
+                    if _content_indicates_eis(lines) and len(nums) >= 3:
+                        column_names = _generic_eis_columns(len(nums))
+                    else:
+                        # 生成通用列名
+                        column_names = [f"Column_{j}" for j in range(len(nums))]
                     data_start = i
                     break
             except ValueError:
@@ -131,13 +135,18 @@ def parse_chi_file(filepath: str, encoding: str = None) -> Measurement:
     data = np.array(data_lines)
 
     # 识别技术类型
-    technique = _detect_technique(column_names, data)
+    technique = _detect_technique(column_names, data, lines)
 
     # 提取电位和电流列
     potential, current, time = _extract_columns(column_names, data, technique)
 
     # 解析元数据
     metadata = _parse_chi_metadata(lines, filepath)
+    if technique == Technique.EIS:
+        metadata["frequency"] = potential.tolist()
+        metadata["z_real"] = current.tolist()
+        if time is not None:
+            metadata["z_imag"] = time.tolist()
 
     return Measurement(
         technique=technique,
@@ -168,6 +177,28 @@ def _split_header_columns(line: str) -> list:
     else:
         parts = stripped.split()
     return [part.strip() for part in parts if part.strip()]
+
+
+def _is_data_header_line(line: str) -> bool:
+    if "=" in line:
+        return False
+    columns = _split_header_columns(line)
+    if len(columns) < 2:
+        return False
+
+    recognized = 0
+    for column in columns:
+        normalized = _normalize_column_name(column)
+        if (
+            _is_potential_column(normalized)
+            or _is_current_column(normalized)
+            or _is_time_column(normalized)
+            or _is_frequency_column(normalized)
+            or _is_impedance_column(normalized)
+            or "phase" in normalized
+        ):
+            recognized += 1
+    return recognized >= 2
 
 
 def _normalize_column_name(name: str) -> str:
@@ -206,6 +237,22 @@ def _is_frequency_column(name: str) -> bool:
     return "freq" in name or name in {"f(hz)", "f/hz", "frequency"}
 
 
+def _is_z_real_column(name: str) -> bool:
+    if _is_z_imag_column(name):
+        return False
+    return any(
+        token in name
+        for token in ("z'", "zreal", "z_real", "zre", "z_re", "rez", "re(z)")
+    )
+
+
+def _is_z_imag_column(name: str) -> bool:
+    return any(
+        token in name
+        for token in ('z"', "z''", "zimag", "z_imag", "zim", "z_im", "imz", "im(z)")
+    )
+
+
 def _is_impedance_column(name: str) -> bool:
     return any(
         token in name
@@ -213,8 +260,46 @@ def _is_impedance_column(name: str) -> bool:
     )
 
 
+def _content_indicates_eis(lines: list) -> bool:
+    for line in lines[:80]:
+        lower = line.strip().lower()
+        if any(
+            token in lower
+            for token in (
+                "a.c. impedance",
+                "ac impedance",
+                "impedance",
+                "eis",
+            )
+        ):
+            return True
+    return False
+
+
+def _generic_eis_columns(count: int) -> list:
+    names = ["Freq/Hz", "Z'/ohm", 'Z"/ohm', "Z/ohm", "Phase/deg"]
+    if count <= len(names):
+        return names[:count]
+    return names + [f"Column_{idx}" for idx in range(len(names), count)]
+
+
+def _is_date_metadata_line(line: str) -> bool:
+    stripped = line.strip()
+    lower = stripped.lower()
+    if lower.startswith("date") or lower.startswith("time/date"):
+        return True
+    if re.search(r"\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b", stripped):
+        return True
+    return bool(
+        re.search(
+            r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+\d{1,2},\s+\d{4}\b",
+            lower,
+        )
+    )
+
+
 def _detect_technique(
-    column_names: list, data: np.ndarray
+    column_names: list, data: np.ndarray, lines: Optional[list] = None
 ) -> Technique:
     """根据列名和数据特征检测电化学技术类型。"""
     col_lower = [_normalize_column_name(c) for c in column_names]
@@ -222,7 +307,7 @@ def _detect_technique(
     has_frequency = any(_is_frequency_column(c) for c in col_lower)
     has_impedance = any(_is_impedance_column(c) for c in col_lower)
 
-    if has_frequency and has_impedance:
+    if (has_frequency and has_impedance) or (lines is not None and _content_indicates_eis(lines)):
         return Technique.EIS
 
     has_time = any(_is_time_column(c) for c in col_lower)
@@ -256,6 +341,30 @@ def _extract_columns(
     potential = None
     current = None
     time = None
+
+    if technique == Technique.EIS:
+        frequency_idx = None
+        z_real_idx = None
+        z_imag_idx = None
+        for i, c in enumerate(col_lower):
+            if i >= ncols:
+                break
+            if frequency_idx is None and _is_frequency_column(c):
+                frequency_idx = i
+            if z_real_idx is None and _is_z_real_column(c):
+                z_real_idx = i
+            if z_imag_idx is None and _is_z_imag_column(c):
+                z_imag_idx = i
+
+        if frequency_idx is None and ncols >= 1:
+            frequency_idx = 0
+        if z_real_idx is None and ncols >= 2:
+            z_real_idx = 1
+        if z_imag_idx is None and ncols >= 3:
+            z_imag_idx = 2
+        if frequency_idx is None or z_real_idx is None or z_imag_idx is None:
+            raise ValueError(f"无法从列名 {column_names} 中识别 EIS 频率/Z'/Z'' 列")
+        return data[:, frequency_idx], data[:, z_real_idx], data[:, z_imag_idx]
 
     # 找电位列
     for i, c in enumerate(col_lower):
@@ -305,7 +414,9 @@ def _parse_chi_metadata(lines: list, filepath: str) -> dict:
 
     for line in lines[:50]:
         lower = line.lower()
-        if "date" in lower or "time" in lower:
+        if "a.c. impedance" in lower or "ac impedance" in lower:
+            metadata["experiment"] = "A.C. Impedance"
+        if metadata["date"] is None and _is_date_metadata_line(line):
             metadata["date"] = line.strip()
         if "electrode" in lower:
             parts = line.split(":")
@@ -317,10 +428,14 @@ def _parse_chi_metadata(lines: list, filepath: str) -> dict:
             if match:
                 metadata["rotation_rpm"] = float(match.group(1))
         if "scan" in lower and ("rate" in lower or "speed" in lower):
-            import re
-            match = re.search(r"(\d+\.?\d*)", line)
+            match = re.search(r"([-+]?\d+(?:\.\d+)?(?:[Ee][-+]?\d+)?)", line)
             if match:
-                metadata["scan_rate"] = float(match.group(1))
+                scan_rate = float(match.group(1))
+                metadata["scan_rate_raw"] = scan_rate
+                if "mv/s" in lower or "mv s" in lower:
+                    scan_rate /= 1000.0
+                    metadata["scan_rate_mV_s"] = float(match.group(1))
+                metadata["scan_rate"] = scan_rate
 
     return metadata
 

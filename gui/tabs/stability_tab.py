@@ -15,8 +15,10 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QTabWidget,
     QTableWidget,
@@ -36,6 +38,7 @@ from gui.widgets.analysis_common import (
     labeled_help_widget,
     measurement_label,
     measurement_name,
+    scrollable_panel,
     set_auto_limits,
     set_table_rows,
     technique_value,
@@ -60,10 +63,12 @@ class StabilityTab(QWidget):
         selector_layout = QHBoxLayout()
         selector_layout.addWidget(QLabel("当前文件:"))
         self.cb_measurement = QComboBox()
-        self.cb_measurement.setMinimumWidth(420)
+        self.cb_measurement.setMinimumWidth(320)
         self.cb_measurement.currentIndexChanged.connect(self._on_measurement_changed)
         selector_layout.addWidget(self.cb_measurement, 1)
         self.lbl_selected = QLabel("未选择 CA/CP 数据")
+        self.lbl_selected.setMinimumWidth(0)
+        self.lbl_selected.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         selector_layout.addWidget(self.lbl_selected)
         main_layout.addLayout(selector_layout)
 
@@ -72,6 +77,7 @@ class StabilityTab(QWidget):
 
         proc_group = QGroupBox("数据处理")
         proc_layout = QFormLayout()
+        proc_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
         self.lbl_curve_type = QLabel("曲线类型: 自动识别")
         proc_layout.addRow("识别结果:", self.lbl_curve_type)
@@ -130,6 +136,7 @@ class StabilityTab(QWidget):
 
         analysis_group = QGroupBox("分析选项")
         analysis_layout = QFormLayout()
+        analysis_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.chk_overlay = QCheckBox("同类型多曲线叠加对比")
         self.chk_overlay.setChecked(True)
         self.chk_abs_retention = QCheckBox("保持率使用绝对幅值")
@@ -190,6 +197,23 @@ class StabilityTab(QWidget):
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
 
+        title_layout = QHBoxLayout()
+        title_layout.addWidget(QLabel("稳定性标题:"))
+        self.txt_raw_title = QLineEdit("稳定性曲线")
+        self.txt_raw_title.setPlaceholderText("留空则不显示标题")
+        self.txt_raw_title.editingFinished.connect(
+            lambda: self._run_analysis(silent=True)
+        )
+        title_layout.addWidget(self.txt_raw_title, 1)
+        title_layout.addWidget(QLabel("保持率标题:"))
+        self.txt_retention_title = QLineEdit("保持率与指数衰减拟合")
+        self.txt_retention_title.setPlaceholderText("留空则不显示标题")
+        self.txt_retention_title.editingFinished.connect(
+            lambda: self._run_analysis(silent=True)
+        )
+        title_layout.addWidget(self.txt_retention_title, 1)
+        right_layout.addLayout(title_layout)
+
         self.plot_tabs = QTabWidget()
         self.raw_plot = PlotWidget(figsize=(6.5, 4.2))
         self.retention_plot = PlotWidget(figsize=(6.5, 4.2))
@@ -210,10 +234,11 @@ class StabilityTab(QWidget):
         right_layout.addWidget(self.result_tabs, 2)
 
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left_panel)
+        splitter.addWidget(scrollable_panel(left_panel, min_width=380))
         splitter.addWidget(right_panel)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 4)
+        splitter.setSizes([380, 1000])
         main_layout.addWidget(splitter, 1)
 
         for widget in (
@@ -271,11 +296,19 @@ class StabilityTab(QWidget):
             return
 
         tech = technique_value(self._measurement)
-        self.lbl_selected.setText(measurement_label(self._measurement))
+        label = measurement_label(self._measurement)
+        self.lbl_selected.setText(label)
+        self.lbl_selected.setToolTip(label)
         if tech == "CP":
             self.lbl_curve_type.setText("CP / E-t，电位随时间")
         else:
             self.lbl_curve_type.setText("CA / I-t，电流随时间")
+
+    def _raw_title(self):
+        return self.txt_raw_title.text().strip()
+
+    def _retention_title(self):
+        return self.txt_retention_title.text().strip()
 
     def _current_table(self):
         return self.stats_table if self.result_tabs.currentWidget() is self.stats_table else self.result_table
@@ -609,7 +642,9 @@ class StabilityTab(QWidget):
 
             raw_ax.set_xlabel(time_label)
             raw_ax.set_ylabel(self._y_label(primary_tech))
-            raw_ax.set_title("CA 稳定性曲线" if primary_tech == "CA" else "CP 稳定性曲线")
+            title = self._raw_title()
+            if title:
+                raw_ax.set_title(title)
             apply_publication_style(raw_ax)
             if raw_x_all:
                 set_auto_limits(raw_ax, np.concatenate(raw_x_all), np.concatenate(raw_y_all))
@@ -617,7 +652,9 @@ class StabilityTab(QWidget):
 
             retention_ax.set_xlabel(time_label)
             retention_ax.set_ylabel("保持率 / %")
-            retention_ax.set_title("保持率与指数衰减拟合")
+            title = self._retention_title()
+            if title:
+                retention_ax.set_title(title)
             apply_publication_style(retention_ax)
             if retention_x_all:
                 set_auto_limits(

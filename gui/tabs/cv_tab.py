@@ -5,8 +5,9 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                QLabel, QComboBox, QDoubleSpinBox, QGroupBox,
                                QFormLayout, QSplitter, QTextEdit, QMessageBox,
                                QFileDialog, QTabWidget, QTableWidget,
-                               QTableWidgetItem, QHeaderView, QCheckBox,
-                               QListWidget, QListWidgetItem)
+                               QTableWidgetItem, QCheckBox,
+                               QListWidget, QListWidgetItem, QLineEdit,
+                               QSizePolicy)
 from PySide6.QtCore import Qt
 
 from gui.widgets.plot_widget import PlotWidget
@@ -17,11 +18,13 @@ from gui.widgets.analysis_common import (
     export_table,
     measurement_label,
     measurement_name,
+    scrollable_panel,
     set_auto_limits,
     technique_value,
 )
 from echem_core.analysis.cv import (
     CDL_IRREGULAR_SCAN_MESSAGE,
+    detect_scan_rate,
     find_peaks,
     calc_cdl,
     calc_ecsa,
@@ -45,10 +48,12 @@ class CVTab(QWidget):
         selector_layout = QHBoxLayout()
         selector_layout.addWidget(QLabel("当前文件:"))
         self.cb_measurement = QComboBox()
-        self.cb_measurement.setMinimumWidth(420)
+        self.cb_measurement.setMinimumWidth(320)
         self.cb_measurement.currentIndexChanged.connect(self._on_measurement_changed)
         selector_layout.addWidget(self.cb_measurement, 1)
         self.lbl_selected = QLabel("未选择 CV 数据")
+        self.lbl_selected.setMinimumWidth(0)
+        self.lbl_selected.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         selector_layout.addWidget(self.lbl_selected)
         main_layout.addLayout(selector_layout)
 
@@ -59,6 +64,7 @@ class CVTab(QWidget):
         # CV 参数
         param_group = QGroupBox("CV 分析参数")
         param_layout = QFormLayout()
+        param_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.cb_peak_direction = QComboBox()
         self.cb_peak_direction.addItems(["both", "oxidative", "reductive"])
         param_layout.addRow("峰检测方向:", self.cb_peak_direction)
@@ -93,6 +99,10 @@ class CVTab(QWidget):
         cdl_layout.addWidget(QLabel("(从数据浏览器拖入或点击添加)"))
         self.btn_add_cdl = QPushButton("➕ 添加当前 CV 到 Cdl 列表")
         self.btn_add_cdl.clicked.connect(self._add_to_cdl_list)
+        self.btn_add_all_cdl = QPushButton("自动添加全部 CV")
+        self.btn_add_all_cdl.clicked.connect(
+            lambda _checked=False: self._add_all_to_cdl_list(show_message=True)
+        )
         self.btn_clear_cdl = QPushButton("🗑️ 清空 Cdl 列表")
         self.btn_clear_cdl.clicked.connect(self._clear_cdl_list)
         self.btn_calc_cdl = QPushButton("📊 计算 Cdl / ECSA")
@@ -100,6 +110,7 @@ class CVTab(QWidget):
 
         cdl_layout.addWidget(self.cdl_list)
         cdl_layout.addWidget(self.btn_add_cdl)
+        cdl_layout.addWidget(self.btn_add_all_cdl)
         cdl_layout.addWidget(self.btn_clear_cdl)
         cdl_layout.addWidget(self.btn_calc_cdl)
 
@@ -118,6 +129,14 @@ class CVTab(QWidget):
         # 右侧：绘图 + 结果
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
+
+        title_layout = QHBoxLayout()
+        title_layout.addWidget(QLabel("图表标题:"))
+        self.txt_plot_title = QLineEdit("CV 曲线")
+        self.txt_plot_title.setPlaceholderText("留空则不显示标题")
+        self.txt_plot_title.editingFinished.connect(self._apply_current_title)
+        title_layout.addWidget(self.txt_plot_title, 1)
+        right_layout.addLayout(title_layout)
 
         self.plot_widget = PlotWidget(figsize=(6, 4))
         self._fig_created = False
@@ -144,10 +163,11 @@ class CVTab(QWidget):
         right_layout.addWidget(self.result_tabs)
 
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left_panel)
+        splitter.addWidget(scrollable_panel(left_panel, min_width=360))
         splitter.addWidget(right_panel)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 3)
+        splitter.setSizes([360, 1000])
         main_layout.addWidget(splitter, 1)
 
     def set_measurements(self, measurements, preferred=None):
@@ -156,6 +176,7 @@ class CVTab(QWidget):
             m for m in self._all_measurements if technique_value(m) == "CV"
         ]
         self._cdl_measurements = [m for m in self._cdl_measurements if m in self._cv_measurements]
+        self._sort_cdl_measurements()
         self._rebuild_cdl_list()
         target = preferred if preferred in self._cv_measurements else self._measurement
         if target not in self._cv_measurements:
@@ -185,7 +206,31 @@ class CVTab(QWidget):
         if self._measurement is None:
             self.lbl_selected.setText("未选择 CV 数据")
         else:
-            self.lbl_selected.setText(measurement_label(self._measurement))
+            label = measurement_label(self._measurement)
+            self.lbl_selected.setText(label)
+            self.lbl_selected.setToolTip(label)
+
+    def _plot_title(self):
+        return self.txt_plot_title.text().strip()
+
+    def _apply_current_title(self):
+        title = self._plot_title()
+        for ax in self.plot_widget.figure.axes:
+            ax.set_title(title)
+        self.plot_widget.refresh()
+
+    def _scan_rate_for_display(self, measurement):
+        scan_rate = detect_scan_rate(measurement)
+        return f"{scan_rate:.4g} V/s" if scan_rate is not None else "未识别"
+
+    def _sort_cdl_measurements(self):
+        self._cdl_measurements.sort(
+            key=lambda measurement: (
+                detect_scan_rate(measurement) is None,
+                detect_scan_rate(measurement) or float("inf"),
+                measurement_name(measurement),
+            )
+        )
 
     def _plot_current_curve(self):
         """Plot the selected CV curve without running peak detection."""
@@ -207,6 +252,9 @@ class CVTab(QWidget):
             ax.plot(pot, cur, color="#1f77b4", linewidth=1.5, label=measurement_name(m))
             ax.set_xlabel("E / V")
             ax.set_ylabel("I / A")
+            title = self._plot_title()
+            if title:
+                ax.set_title(title)
             apply_publication_style(ax)
             set_auto_limits(ax, pot, cur)
             ax.legend(fontsize=8)
@@ -242,6 +290,9 @@ class CVTab(QWidget):
             ax.plot(pot, cur, color="#1f77b4", linewidth=1.5, label=measurement_name(m))
             ax.set_xlabel("E / V")
             ax.set_ylabel("I / A")
+            title = self._plot_title()
+            if title:
+                ax.set_title(title)
             apply_publication_style(ax)
             set_auto_limits(ax, pot, cur)
             ax.legend(fontsize=8)
@@ -281,10 +332,24 @@ class CVTab(QWidget):
             return
         if self._measurement not in self._cdl_measurements:
             self._cdl_measurements.append(self._measurement)
-            name = self._measurement.metadata.get("sample_name", "未知")
-            sr = self._measurement.metadata.get("scan_rate", "?")
-            item = QListWidgetItem(f"{name} (扫速: {sr} V/s)")
-            self.cdl_list.addItem(item)
+            self._sort_cdl_measurements()
+            self._rebuild_cdl_list()
+
+    def _add_all_to_cdl_list(self, show_message=True):
+        """将当前项目中可识别扫速的全部 CV 添加到 Cdl 列表。"""
+        self._cdl_measurements = [
+            measurement
+            for measurement in self._cv_measurements
+            if detect_scan_rate(measurement) is not None
+        ]
+        self._sort_cdl_measurements()
+        self._rebuild_cdl_list()
+        if show_message and len(self._cdl_measurements) < 2:
+            QMessageBox.information(
+                self,
+                "Cdl / ECSA",
+                "当前导入的 CV 数据中少于 2 个文件可识别扫速。",
+            )
 
     def _clear_cdl_list(self):
         """清空 Cdl 计算列表。"""
@@ -293,18 +358,28 @@ class CVTab(QWidget):
 
     def _rebuild_cdl_list(self):
         self.cdl_list.clear()
+        self._sort_cdl_measurements()
         for measurement in self._cdl_measurements:
             name = measurement.metadata.get("sample_name", "未知")
-            sr = measurement.metadata.get("scan_rate", "?")
-            self.cdl_list.addItem(QListWidgetItem(f"{name} (扫速: {sr} V/s)"))
+            sr = self._scan_rate_for_display(measurement)
+            self.cdl_list.addItem(QListWidgetItem(f"{name} (扫速: {sr})"))
 
     def _calc_cdl(self):
         """计算 Cdl 和 ECSA。"""
         if len(self._cdl_measurements) < 2:
-            QMessageBox.warning(self, "提示", "至少需要 2 个不同扫速的 CV 数据。\n请先添加更多 CV 数据。")
-            return
+            self._add_all_to_cdl_list(show_message=False)
+            if len(self._cdl_measurements) < 2:
+                QMessageBox.warning(
+                    self,
+                    "提示",
+                    "至少需要 2 个不同扫速的 CV 数据。\n"
+                    "请确认已导入多个 CV 文件，且文件元数据或电位-时间曲线可识别扫速。",
+                )
+                return
 
         try:
+            self._sort_cdl_measurements()
+            self._rebuild_cdl_list()
             cdl, r2, df_dv, scan_rates = calc_cdl(self._cdl_measurements)
             ecsa = calc_ecsa(cdl, specific_capacitance=self.spin_specific_c.value())
 
@@ -328,6 +403,9 @@ class CVTab(QWidget):
             ax.plot(x_fit, y_fit, 'r--', alpha=0.7, label=f'Cdl = {cdl:.6f} F')
             ax.set_xlabel("扫描速率 (V/s)")
             ax.set_ylabel("Δj/2 (A)")
+            title = self._plot_title()
+            if title:
+                ax.set_title(title)
             ax.legend()
             apply_publication_style(ax)
             set_auto_limits(ax, scan_rates, df_dv)

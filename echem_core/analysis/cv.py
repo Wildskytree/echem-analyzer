@@ -5,7 +5,8 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+import re
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from scipy import signal, stats
@@ -234,6 +235,64 @@ def _split_cv(
     return fwd_pot, fwd_cur, rev_pot, rev_cur
 
 
+def _coerce_scan_rate(value) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        scan_rate = float(value)
+    except (TypeError, ValueError):
+        text = str(value).strip()
+        match = re.search(r"[-+]?\d+(?:\.\d+)?(?:[Ee][-+]?\d+)?", text)
+        if not match:
+            return None
+        scan_rate = float(match.group(0))
+        lower = text.lower()
+        if "mv/s" in lower or "mv s" in lower:
+            scan_rate /= 1000.0
+    if not np.isfinite(scan_rate) or scan_rate <= 0:
+        return None
+    return float(scan_rate)
+
+
+def detect_scan_rate(measurement: Measurement) -> Optional[float]:
+    """Return scan rate in V/s from metadata or the potential-time trace."""
+    scan_rate = _coerce_scan_rate(measurement.metadata.get("scan_rate"))
+    if scan_rate is not None:
+        return scan_rate
+
+    time = measurement.raw_time
+    if time is None:
+        return None
+
+    potential = (
+        measurement.processed_potential
+        if measurement.processed_potential is not None
+        else measurement.raw_potential
+    )
+    potential = np.asarray(potential, dtype=float)
+    time = np.asarray(time, dtype=float)
+    n = min(potential.size, time.size)
+    if n < 3:
+        return None
+
+    d_potential = np.diff(potential[:n])
+    d_time = np.diff(time[:n])
+    mask = (
+        np.isfinite(d_potential)
+        & np.isfinite(d_time)
+        & (np.abs(d_time) > 1e-12)
+        & (np.abs(d_potential) > 1e-12)
+    )
+    if np.count_nonzero(mask) == 0:
+        return None
+
+    rates = np.abs(d_potential[mask] / d_time[mask])
+    rates = rates[np.isfinite(rates) & (rates > 0)]
+    if rates.size == 0:
+        return None
+    return float(np.median(rates))
+
+
 def calc_cdl(
     measurements: List[Measurement],
 ) -> Tuple[float, float, List[float], List[float]]:
@@ -267,17 +326,22 @@ def calc_cdl(
     if len(measurements) < 2:
         raise ValueError("至少需要 2 个不同扫描速率的测量数据")
 
+    scan_data = []
+
+    for m in measurements:
+        sr = detect_scan_rate(m)
+        if sr is None:
+            raise ValueError(
+                f"测量数据 {m!r} 的 scan_rate 无效（{m.metadata.get('scan_rate')}）"
+            )
+        scan_data.append((sr, m))
+
+    scan_data.sort(key=lambda item: item[0])
+
     df_dv_values: List[float] = []
     scan_rates: List[float] = []
 
-    for m in measurements:
-        # 获取扫描速率
-        sr = m.metadata.get("scan_rate")
-        if sr is None or not np.isfinite(sr) or sr <= 0:
-            raise ValueError(
-                f"测量数据 {m!r} 的 scan_rate 无效（{sr}）"
-            )
-
+    for sr, m in scan_data:
         # 使用处理后的数据，若无则使用原始数据
         potential = (
             m.processed_potential
@@ -333,6 +397,8 @@ def calc_cdl(
     # 线性拟合：Δj/2 [A] vs 扫描速率 [V/s]，斜率为 Cdl [F]
     x = np.array(scan_rates, dtype=float)
     y = np.array(df_dv_values, dtype=float)
+    if np.unique(np.round(x, decimals=12)).size < 2:
+        raise ValueError("至少需要 2 个不同扫描速率的测量数据")
 
     slope, intercept, r_value, p_value, std_err = stats.linregress(x, y)
     r_squared = float(r_value**2)

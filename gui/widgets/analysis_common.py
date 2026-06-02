@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QWidget,
@@ -145,6 +147,19 @@ def labeled_help_widget(parent: QWidget, label: str, title: str, message: str) -
     layout.addWidget(make_help_button(parent, title, message))
     layout.addStretch()
     return widget
+
+
+def scrollable_panel(widget: QWidget, min_width: int = 360) -> QScrollArea:
+    """Wrap a sidebar panel so dense controls remain reachable on small screens."""
+    scroll = QScrollArea()
+    scroll.setWidget(widget)
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QScrollArea.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    scroll.setMinimumWidth(min_width)
+    scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+    widget.setMinimumWidth(min_width)
+    return scroll
 
 
 def configure_result_table(table: QTableWidget, headers: Sequence[str]):

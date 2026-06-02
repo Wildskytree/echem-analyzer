@@ -11,6 +11,7 @@ from PySide6.QtCore import Qt, QThread, Signal
 
 from echem_core.batch.batch_processor import BatchProcessor, export_data_for_origin
 from echem_core.batch.report import generate_xlsx_with_cdl
+from gui.widgets.analysis_common import scrollable_panel
 
 
 class BatchWorker(QThread):
@@ -166,10 +167,11 @@ class BatchTab(QWidget):
         right_layout.addWidget(log_group)
 
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left)
+        splitter.addWidget(scrollable_panel(left, min_width=360))
         splitter.addWidget(right)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
+        splitter.setSizes([360, 720])
         layout.addWidget(splitter)
 
     def _browse_input(self):

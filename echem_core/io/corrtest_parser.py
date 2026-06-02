@@ -290,6 +290,8 @@ def _find_data_header(lines: List[str]) -> Optional[int]:
 
 
 def _split_row(line: str) -> List[str]:
+    if "," in line:
+        return [part.strip() for part in line.strip().split(",") if part.strip()]
     if "\t" in line:
         return [part.strip() for part in line.strip().split("\t") if part.strip()]
     return [part.strip() for part in line.strip().split() if part.strip()]

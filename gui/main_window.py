@@ -37,8 +37,8 @@ class MainWindow(QMainWindow):
     def _setup_window(self):
         """设置窗口基本属性。"""
         self.setWindowTitle(self.APP_NAME)
-        self.setMinimumSize(1200, 800)
-        self.resize(1400, 900)
+        self.setMinimumSize(1280, 820)
+        self.resize(1500, 950)
         # 启用 HiDPI 支持
         if hasattr(Qt, 'AA_EnableHighDpiScaling'):
             QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)

@@ -9,6 +9,8 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                QSplitter)
 from PySide6.QtCore import Qt
 
+from gui.widgets.analysis_common import scrollable_panel
+
 
 class ProjectTab(QWidget):
     """项目管理标签页。
@@ -81,10 +83,11 @@ class ProjectTab(QWidget):
         right_layout.addWidget(info_group)
 
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left)
+        splitter.addWidget(scrollable_panel(left, min_width=340))
         splitter.addWidget(right)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 2)
+        splitter.setSizes([340, 800])
         layout.addWidget(splitter)
 
     def log_event(self, event: str):

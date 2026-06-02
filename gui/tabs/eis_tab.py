@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QTableWidget,
     QComboBox,
+    QLineEdit,
+    QSizePolicy,
 )
 from PySide6.QtCore import Qt
 
@@ -27,7 +29,7 @@ from gui.widgets.analysis_common import (
     export_table,
     format_float,
     measurement_label,
-    measurement_name,
+    scrollable_panel,
     set_table_rows,
     technique_value,
 )
@@ -58,10 +60,12 @@ class EISTab(QWidget):
         selector_layout = QHBoxLayout()
         selector_layout.addWidget(QLabel("当前文件:"))
         self.cb_measurement = QComboBox()
-        self.cb_measurement.setMinimumWidth(420)
+        self.cb_measurement.setMinimumWidth(320)
         self.cb_measurement.currentIndexChanged.connect(self._on_measurement_changed)
         selector_layout.addWidget(self.cb_measurement, 1)
         self.lbl_selected = QLabel("未选择 EIS 数据")
+        self.lbl_selected.setMinimumWidth(0)
+        self.lbl_selected.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         selector_layout.addWidget(self.lbl_selected)
         main_layout.addLayout(selector_layout)
 
@@ -89,6 +93,22 @@ class EISTab(QWidget):
 
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
+        title_layout = QHBoxLayout()
+        title_layout.addWidget(QLabel("Nyquist 标题:"))
+        self.txt_nyquist_title = QLineEdit("Nyquist 图")
+        self.txt_nyquist_title.setPlaceholderText("留空则不显示标题")
+        self.txt_nyquist_title.editingFinished.connect(
+            lambda: self._run_analysis(silent=True)
+        )
+        title_layout.addWidget(self.txt_nyquist_title, 1)
+        title_layout.addWidget(QLabel("Bode 标题:"))
+        self.txt_bode_title = QLineEdit("Bode 图")
+        self.txt_bode_title.setPlaceholderText("留空则不显示标题")
+        self.txt_bode_title.editingFinished.connect(
+            lambda: self._run_analysis(silent=True)
+        )
+        title_layout.addWidget(self.txt_bode_title, 1)
+        right_layout.addLayout(title_layout)
         self.plot_tabs = QTabWidget()
 
         self.nyquist_plot = PlotWidget(figsize=(5.5, 5.2))
@@ -102,10 +122,11 @@ class EISTab(QWidget):
         right_layout.addWidget(self.result_table, 1)
 
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left_panel)
+        splitter.addWidget(scrollable_panel(left_panel, min_width=300))
         splitter.addWidget(right_panel)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 4)
+        splitter.setSizes([300, 1100])
         main_layout.addWidget(splitter, 1)
 
     def set_measurements(self, measurements, preferred=None):
@@ -140,7 +161,15 @@ class EISTab(QWidget):
         if self._measurement is None:
             self.lbl_selected.setText("未选择 EIS 数据")
         else:
-            self.lbl_selected.setText(measurement_label(self._measurement))
+            label = measurement_label(self._measurement)
+            self.lbl_selected.setText(label)
+            self.lbl_selected.setToolTip(label)
+
+    def _nyquist_title(self):
+        return self.txt_nyquist_title.text().strip()
+
+    def _bode_title(self):
+        return self.txt_bode_title.text().strip()
 
     def _extract_eis_arrays(self, measurement):
         meta = measurement.metadata
@@ -181,7 +210,9 @@ class EISTab(QWidget):
             ax.plot(zr, neg_zi, marker="o", markersize=4, linewidth=1.2, color="#1f77b4")
             ax.set_xlabel("Z' / Ω")
             ax.set_ylabel("-Z'' / Ω")
-            ax.set_title(f"Nyquist - {measurement_name(self._measurement)}")
+            title = self._nyquist_title()
+            if title:
+                ax.set_title(title)
             apply_publication_style(ax)
             xlim, ylim = nyquist_axis_limits(z_real, z_imag, margin=0.08)
             ax.set_xlim(*xlim)
@@ -216,6 +247,9 @@ class EISTab(QWidget):
                 ax2 = self.bode_plot.figure.add_subplot(212, sharex=ax1)
                 ax1.semilogx(freq, z_mod, color="#1f77b4", linewidth=1.5)
                 ax2.semilogx(freq, phase, color="#d62728", linewidth=1.5)
+                title = self._bode_title()
+                if title:
+                    ax1.set_title(title)
                 ax1.set_ylabel("|Z| / Ω")
                 ax2.set_xlabel("频率 / Hz")
                 ax2.set_ylabel("相位 / °")

@@ -20,6 +20,8 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QCheckBox,
     QSpinBox,
+    QLineEdit,
+    QSizePolicy,
 )
 from PySide6.QtCore import Qt
 
@@ -35,6 +37,7 @@ from gui.widgets.analysis_common import (
     labeled_help_widget,
     measurement_label,
     measurement_name,
+    scrollable_panel,
     set_auto_limits,
     set_table_rows,
     technique_value,
@@ -67,10 +70,12 @@ class LSVTab(QWidget):
         selector_layout = QHBoxLayout()
         selector_layout.addWidget(QLabel("当前文件:"))
         self.cb_measurement = QComboBox()
-        self.cb_measurement.setMinimumWidth(420)
+        self.cb_measurement.setMinimumWidth(320)
         self.cb_measurement.currentIndexChanged.connect(self._on_measurement_changed)
         selector_layout.addWidget(self.cb_measurement, 1)
         self.lbl_selected = QLabel("未选择 LSV 数据")
+        self.lbl_selected.setMinimumWidth(0)
+        self.lbl_selected.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         selector_layout.addWidget(self.lbl_selected)
         main_layout.addLayout(selector_layout)
 
@@ -79,6 +84,7 @@ class LSVTab(QWidget):
 
         proc_group = QGroupBox("数据处理")
         proc_layout = QFormLayout()
+        proc_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
         self.chk_to_rhe = QCheckBox("转换到 RHE")
         self.chk_to_rhe.setChecked(True)
@@ -176,9 +182,10 @@ class LSVTab(QWidget):
         smooth_tip = (
             "Savitzky-Golay 平滑用于降低电流噪声，同时尽量保留峰形和斜率。\n"
             "窗口: 每次局部多项式拟合使用的数据点数，需大于阶数；程序会自动调整为奇数。"
-            "LSV 常用 7-31，噪声较大可增大，过大会抹平真实特征。\n"
+            "\nLSV 常用 7-31，噪声较大可增大，过大会抹平真实特征。\n"
             "阶数: 局部多项式阶数，常用 2 或 3；一般不建议超过 4。"
         )
+        proc_group.setToolTip(smooth_tip)
         self.chk_smooth.setToolTip(smooth_tip)
         self.spin_window.setToolTip(smooth_tip)
         self.spin_order.setToolTip(smooth_tip)
@@ -190,6 +197,7 @@ class LSVTab(QWidget):
 
         analysis_group = QGroupBox("分析选项")
         analysis_layout = QFormLayout()
+        analysis_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.spin_read_potential = QDoubleSpinBox()
         self.spin_read_potential.setRange(-10.0, 10.0)
         self.spin_read_potential.setDecimals(4)
@@ -241,6 +249,15 @@ class LSVTab(QWidget):
 
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
+        title_layout = QHBoxLayout()
+        title_layout.addWidget(QLabel("图表标题:"))
+        self.txt_plot_title = QLineEdit("LSV 曲线")
+        self.txt_plot_title.setPlaceholderText("留空则不显示标题")
+        self.txt_plot_title.editingFinished.connect(
+            lambda: self._run_analysis(silent=True)
+        )
+        title_layout.addWidget(self.txt_plot_title, 1)
+        right_layout.addLayout(title_layout)
         self.plot_tabs = QTabWidget()
         self.plot_widget = PlotWidget(figsize=(6.5, 4.4))
         self.derivative_plot = PlotWidget(figsize=(6.5, 4.4))
@@ -253,10 +270,11 @@ class LSVTab(QWidget):
         right_layout.addWidget(self.result_table, 2)
 
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left_panel)
+        splitter.addWidget(scrollable_panel(left_panel, min_width=380))
         splitter.addWidget(right_panel)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 4)
+        splitter.setSizes([380, 1000])
         main_layout.addWidget(splitter, 1)
 
     def set_measurements(self, measurements, preferred=None):
@@ -291,7 +309,9 @@ class LSVTab(QWidget):
         if self._measurement is None:
             self.lbl_selected.setText("未选择 LSV 数据")
         else:
-            self.lbl_selected.setText(measurement_label(self._measurement))
+            label = measurement_label(self._measurement)
+            self.lbl_selected.setText(label)
+            self.lbl_selected.setToolTip(label)
 
     def _current_curve_set(self):
         if self.chk_overlay.isChecked():
@@ -363,6 +383,9 @@ class LSVTab(QWidget):
     def _x_label(self):
         return "E / V vs. RHE" if self.chk_to_rhe.isChecked() else "E / V"
 
+    def _plot_title(self):
+        return self.txt_plot_title.text().strip()
+
     def _detect_peaks(self, potential, current):
         try:
             from scipy.signal import find_peaks as scipy_find_peaks
@@ -419,7 +442,9 @@ class LSVTab(QWidget):
 
             ax.set_xlabel(self._x_label())
             ax.set_ylabel(self._y_label())
-            ax.set_title("ORR Analysis" if self.chk_orr.isChecked() else "LSV Curve")
+            title = self._plot_title()
+            if title:
+                ax.set_title(title)
             apply_publication_style(ax)
             if all_x:
                 set_auto_limits(ax, np.concatenate(all_x), np.concatenate(all_y))
@@ -473,6 +498,8 @@ class LSVTab(QWidget):
                     continue
             dax.set_xlabel(self._x_label())
             dax.set_ylabel(f"d({self._y_label().split('/')[0].strip()})/dE")
+            if title:
+                dax.set_title(f"{title} - 微分曲线")
             apply_publication_style(dax)
             if derivative_drawn:
                 line_x = np.concatenate([line.get_xdata() for line in dax.lines])
