@@ -20,6 +20,14 @@ dependencies = [
 test = [
     "pytest",
 ]
+gui = [
+    "PySide6>=6.5",
+    "matplotlib",
+    "numpy",
+    "scipy",
+    "openpyxl",
+    "lmfit",
+]
 
 [project.scripts]
 echem = "echem_core.cli:main"

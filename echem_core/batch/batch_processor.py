@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import hashlib
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Union
 
@@ -304,6 +305,7 @@ class BatchProcessor:
         print(f"[BatchProcessor] 导出 {len(saved)} 张图到 {output_dir}")
         return saved
 
+
     # ── 内部处理方法 ───────────────────────────────────────────────────────
 
     @staticmethod
@@ -423,4 +425,100 @@ class BatchProcessor:
         )
 
 
-__all__ = ["BatchProcessor"]
+def export_data_for_origin(
+    measurements: Sequence[Measurement],
+    output_dir: Union[str, Path],
+) -> List[Path]:
+    """导出 Origin 可直接导入的制表符分隔数据文件。
+
+    每个 Measurement 输出一个 ``*_data.txt`` 文件，数字使用科学计数法。
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    saved: List[Path] = []
+    for index, measurement in enumerate(measurements):
+        headers, columns = _origin_columns_for_measurement(measurement)
+        if len(columns) < 2:
+            continue
+
+        arrays = [np.asarray(column, dtype=float) for column in columns]
+        n_points = min(len(array) for array in arrays)
+        if n_points == 0:
+            continue
+
+        data = np.column_stack([array[:n_points] for array in arrays])
+        sample_name = measurement.metadata.get("sample_name") or f"measurement_{index:04d}"
+        filename = f"{_safe_origin_stem(sample_name, index)}_data.txt"
+        path = _unique_path(output_dir / filename, saved)
+        np.savetxt(
+            path,
+            data,
+            delimiter="\t",
+            fmt="%.10e",
+            header="\t".join(headers),
+            comments="",
+        )
+        saved.append(path)
+
+    print(f"[BatchProcessor] 导出 {len(saved)} 个 Origin 数据文件到 {output_dir}")
+    return saved
+
+
+def _origin_columns_for_measurement(
+    measurement: Measurement,
+) -> tuple[List[str], List[np.ndarray]]:
+    metadata = measurement.metadata
+
+    if measurement.technique == Technique.EIS:
+        frequency = _optional_array(metadata.get("frequency", measurement.raw_potential))
+        z_real = _optional_array(metadata.get("z_real", measurement.raw_current))
+        z_imag = _optional_array(metadata.get("z_imag", measurement.raw_time))
+
+        headers: List[str] = []
+        columns: List[np.ndarray] = []
+        for header, column in (
+            ("frequency", frequency),
+            ("z_real", z_real),
+            ("z_imag", z_imag),
+        ):
+            if column is not None:
+                headers.append(header)
+                columns.append(column)
+        return headers, columns
+
+    headers = ["potential", "current"]
+    columns = [measurement.raw_potential, measurement.raw_current]
+    if measurement.raw_time is not None:
+        headers.append("time")
+        columns.append(measurement.raw_time)
+    return headers, columns
+
+
+def _optional_array(values: Any) -> Optional[np.ndarray]:
+    if values is None:
+        return None
+    return np.asarray(values, dtype=float)
+
+
+def _safe_origin_stem(sample_name: Any, index: int) -> str:
+    name = str(sample_name).strip() or f"measurement_{index:04d}"
+    stem = Path(name).stem or name
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", stem).strip(" ._")
+    return stem or f"measurement_{index:04d}"
+
+
+def _unique_path(path: Path, existing: Sequence[Path]) -> Path:
+    used = {p.resolve() for p in existing}
+    if not path.exists() and path.resolve() not in used:
+        return path
+
+    counter = 2
+    while True:
+        candidate = path.with_name(f"{path.stem}_{counter}{path.suffix}")
+        if not candidate.exists() and candidate.resolve() not in used:
+            return candidate
+        counter += 1
+
+
+__all__ = ["BatchProcessor", "export_data_for_origin"]

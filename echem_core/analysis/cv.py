@@ -13,6 +13,12 @@ from scipy import signal, stats
 from echem_core.model.measurement import Measurement
 
 
+CDL_IRREGULAR_SCAN_MESSAGE = (
+    "CV data appears to have irregular scan pattern. Please ensure the data has "
+    "at least one complete forward+backward sweep."
+)
+
+
 def find_peaks(
     potential: np.ndarray,
     current: np.ndarray,
@@ -160,57 +166,71 @@ def _split_cv(
         (forward_potential, forward_current, backward_potential, backward_current)
         四元组，各元素为一维 ndarray。
     """
+    empty = np.array([], dtype=float)
+    potential = np.asarray(potential, dtype=float)
+    current = np.asarray(current, dtype=float)
+    if potential.ndim != 1 or current.ndim != 1 or potential.size != current.size:
+        return empty, empty, empty, empty
+
+    finite = np.isfinite(potential) & np.isfinite(current)
+    potential = potential[finite]
+    current = current[finite]
+    if potential.size < 2:
+        return empty, empty, empty, empty
+
     diff = np.diff(potential)
-    # 用符号检测方向变化，忽略静止点（diff=0）
-    signs = np.zeros_like(diff)
+    signs = np.zeros_like(diff, dtype=int)
     signs[diff > 1e-12] = 1
     signs[diff < -1e-12] = -1
-    # 压缩：合并连续相同的符号
-    compressed_signs = []
-    for s in signs:
-        if not compressed_signs or s != compressed_signs[-1]:
-            compressed_signs.append(s)
 
-    if len(compressed_signs) < 2:
-        # 只有一种扫描方向，无法拆分
+    nonzero_diff_idx = np.flatnonzero(signs)
+    if nonzero_diff_idx.size < 2:
+        return empty, empty, empty, empty
+
+    runs = []
+    run_start = int(nonzero_diff_idx[0])
+    prev_idx = int(nonzero_diff_idx[0])
+    prev_sign = int(signs[prev_idx])
+    for diff_idx_raw in nonzero_diff_idx[1:]:
+        diff_idx = int(diff_idx_raw)
+        sign = int(signs[diff_idx])
+        if sign != prev_sign:
+            runs.append((prev_sign, run_start, prev_idx))
+            run_start = diff_idx
+            prev_sign = sign
+        prev_idx = diff_idx
+    runs.append((prev_sign, run_start, prev_idx))
+
+    if len(runs) < 2:
+        return empty, empty, empty, empty
+
+    def segment_from_run(run):
+        _direction, start_diff, end_diff = run
         return (
-            np.array([]),
-            np.array([]),
-            np.array([]),
-            np.array([]),
+            potential[start_diff : end_diff + 2].copy(),
+            current[start_diff : end_diff + 2].copy(),
         )
 
-    # 找出方向变化的原始索引
-    sign_changes = np.where(np.diff(signs, prepend=signs[0]) != 0)[0]
-
-    if len(sign_changes) < 1:
-        return (
-            np.array([]),
-            np.array([]),
-            np.array([]),
-            np.array([]),
+    def clean_segment(seg_pot, seg_cur):
+        if seg_pot.size == 0:
+            return empty, empty
+        if seg_pot[-1] < seg_pot[0]:
+            seg_pot = seg_pot[::-1]
+            seg_cur = seg_cur[::-1]
+        unique_pot, inverse, counts = np.unique(
+            seg_pot,
+            return_inverse=True,
+            return_counts=True,
         )
+        if unique_pot.size != seg_pot.size:
+            cur_sum = np.zeros(unique_pot.size, dtype=float)
+            np.add.at(cur_sum, inverse, seg_cur)
+            seg_pot = unique_pot
+            seg_cur = cur_sum / counts
+        return seg_pot, seg_cur
 
-    # 取第一个转折点
-    fwd_end = int(sign_changes[0])
-    # 如果有第二个不同的转折点则作为反向结束，否则取最后一点
-    if len(sign_changes) >= 2 and sign_changes[1] > fwd_end + 1:
-        rev_end = int(sign_changes[1])
-    else:
-        rev_end = len(potential) - 1
-
-    fwd_pot = potential[: fwd_end + 1]
-    fwd_cur = current[: fwd_end + 1]
-
-    rev_pot = potential[fwd_end : rev_end + 1]
-    rev_cur = current[fwd_end : rev_end + 1]
-
-    # 确保电位数组单调递增（np.interp 要求）
-    if fwd_pot[-1] < fwd_pot[0]:
-        fwd_pot, fwd_cur = fwd_pot[::-1], fwd_cur[::-1]
-    if rev_pot[-1] < rev_pot[0]:
-        rev_pot, rev_cur = rev_pot[::-1], rev_cur[::-1]
-
+    fwd_pot, fwd_cur = clean_segment(*segment_from_run(runs[0]))
+    rev_pot, rev_cur = clean_segment(*segment_from_run(runs[1]))
     return fwd_pot, fwd_cur, rev_pot, rev_cur
 
 
@@ -272,10 +292,8 @@ def calc_cdl(
 
         # 拆分正向/反向扫描
         fwd_pot, fwd_cur, rev_pot, rev_cur = _split_cv(potential, current)
-        if fwd_pot.size == 0 or rev_pot.size == 0:
-            raise ValueError(
-                f"测量数据 {m!r} 无法拆分为正向/反向扫描"
-            )
+        if fwd_pot.size < 5 or rev_pot.size < 5:
+            raise ValueError(CDL_IRREGULAR_SCAN_MESSAGE)
 
         # 确定电位范围的中点，在其 ±10 % 范围内采样
         pot_min = max(float(np.min(fwd_pot)), float(np.min(rev_pot)))
