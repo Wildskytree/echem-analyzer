@@ -10,8 +10,12 @@ from typing import Dict, List, Optional
 
 import matplotlib as mpl
 
+from echem_core.plotting.fonts import configure_matplotlib_fonts
+
 # 黄金分割比 (φ)
 _GOLDEN_RATIO = 1.618
+
+configure_matplotlib_fonts()
 
 
 # ── 色盲友好型 8 色调色板（Wong, 2011, Nature Methods） ──────────────────
@@ -104,6 +108,7 @@ class JournalStyle:
         fig.set_size_inches(_mm_to_inches(self.width_mm), _mm_to_inches(h_mm))
 
         # ── rcParams 全局设置 ──────────────────────────────────────────
+        configure_matplotlib_fonts()
         mpl.rcParams["font.family"] = self.font_family
         mpl.rcParams["font.size"] = self.font_size
         mpl.rcParams["axes.labelsize"] = self.font_size + 1

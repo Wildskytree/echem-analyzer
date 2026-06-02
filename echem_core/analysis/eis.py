@@ -19,6 +19,35 @@ def nyquist_data(z_real: np.ndarray, z_imag: np.ndarray) -> Tuple[np.ndarray, np
     return np.asarray(z_real, dtype=float), -np.asarray(z_imag, dtype=float)
 
 
+def impedance_axis_limits(values: np.ndarray, margin: float = 0.08) -> Tuple[float, float]:
+    """Return data-adaptive axis limits for impedance plots."""
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return 0.0, 1.0
+
+    vmin = float(np.min(arr))
+    vmax = float(np.max(arr))
+    span = vmax - vmin
+    if not np.isfinite(span) or span <= 0:
+        center = (vmin + vmax) / 2.0
+        pad = max(abs(center) * margin, 1e-9)
+        return center - pad, center + pad
+
+    pad = span * margin
+    return vmin - pad, vmax + pad
+
+
+def nyquist_axis_limits(
+    z_real: np.ndarray,
+    z_imag: np.ndarray,
+    margin: float = 0.08,
+) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+    """Return x/y axis limits for a Nyquist plot."""
+    zr, neg_zi = nyquist_data(z_real, z_imag)
+    return impedance_axis_limits(zr, margin), impedance_axis_limits(neg_zi, margin)
+
+
 def bode_data(
     frequency: np.ndarray, z_real: np.ndarray, z_imag: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:

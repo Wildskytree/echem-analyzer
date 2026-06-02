@@ -20,6 +20,13 @@ _EXP_TYPE_MAP = {
     "ID_CV": Technique.CV,
     "ID_LSV": Technique.LSV,
     "ID_EIS": Technique.EIS,
+    "ID_CA": Technique.CA,
+    "ID_CP": Technique.CP,
+    "ID_POTSQUAREWAVE": Technique.CA,
+    "ID_POTSTEP": Technique.CA,
+    "ID_POTENTIALSTEP": Technique.CA,
+    "ID_CHRONOAMPEROMETRY": Technique.CA,
+    "ID_CHRONOPOTENTIOMETRY": Technique.CP,
 }
 
 
@@ -222,6 +229,10 @@ def _technique_from_exp_type(exp_type: str) -> Optional[Technique]:
         return technique
     if "EIS" in exp_type or "IMP" in exp_type:
         return Technique.EIS
+    if any(token in exp_type for token in ("POTSTEP", "POTSQUAREWAVE", "CHRONOAMP", "I-T", "IT")):
+        return Technique.CA
+    if any(token in exp_type for token in ("CHRONOPOT", "CP")):
+        return Technique.CP
     return None
 
 

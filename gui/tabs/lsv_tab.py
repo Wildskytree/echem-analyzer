@@ -173,6 +173,15 @@ class LSVTab(QWidget):
         self.spin_order = QSpinBox()
         self.spin_order.setRange(1, 5)
         self.spin_order.setValue(2)
+        smooth_tip = (
+            "Savitzky-Golay 平滑用于降低电流噪声，同时尽量保留峰形和斜率。\n"
+            "窗口: 每次局部多项式拟合使用的数据点数，需大于阶数；程序会自动调整为奇数。"
+            "LSV 常用 7-31，噪声较大可增大，过大会抹平真实特征。\n"
+            "阶数: 局部多项式阶数，常用 2 或 3；一般不建议超过 4。"
+        )
+        self.chk_smooth.setToolTip(smooth_tip)
+        self.spin_window.setToolTip(smooth_tip)
+        self.spin_order.setToolTip(smooth_tip)
         proc_layout.addRow("", self.chk_smooth)
         proc_layout.addRow("窗口:", self.spin_window)
         proc_layout.addRow("阶数:", self.spin_order)
@@ -206,6 +215,8 @@ class LSVTab(QWidget):
 
         self.btn_process = QPushButton("执行分析")
         self.btn_process.clicked.connect(self._run_analysis)
+        self.btn_detect_peaks = QPushButton("手动峰检测")
+        self.btn_detect_peaks.clicked.connect(self._run_peak_detection)
         self.btn_kl = QPushButton("执行 K-L 分析")
         self.btn_kl.clicked.connect(self._run_kl)
         self.btn_copy = QPushButton("复制结果")
@@ -219,6 +230,7 @@ class LSVTab(QWidget):
         self.btn_export_plot.setEnabled(False)
         for btn in (
             self.btn_process,
+            self.btn_detect_peaks,
             self.btn_kl,
             self.btn_copy,
             self.btn_export_results,
@@ -428,14 +440,6 @@ class LSVTab(QWidget):
             except Exception as exc:
                 rows.append([f"{read_e:.4f} V 处电流", "N/A", self._y_label().split("/")[-1].strip(), str(exc)])
 
-            peaks = self._detect_peaks(selected_pot, selected_cur)
-            if peaks:
-                for idx, (kind, ep, ip) in enumerate(peaks[:8], start=1):
-                    rows.append([f"{kind} {idx}", f"E={ep:.4f}, I={ip:.6g}", "V, 电流", "按 5% prominence 自动检测"])
-                    ax.scatter([ep], [ip], s=38, zorder=5)
-            else:
-                rows.append(["峰检测", "未检出明显峰", "", "按 5% prominence 自动检测"])
-
             rows.append(["电位范围", f"{np.nanmin(selected_pot):.4f} ~ {np.nanmax(selected_pot):.4f}", "V", "处理后的范围"])
             rows.append(["电流范围", f"{np.nanmin(selected_cur):.6g} ~ {np.nanmax(selected_cur):.6g}", self._y_label().split("/")[-1].strip(), "处理后的范围"])
 
@@ -486,6 +490,38 @@ class LSVTab(QWidget):
         except Exception as exc:
             if not silent:
                 QMessageBox.critical(self, "分析错误", f"执行 LSV 分析时出错:\n{exc}")
+
+    def _run_peak_detection(self, checked=False):
+        if self._measurement is None:
+            QMessageBox.warning(self, "提示", "请先选择 LSV 数据。")
+            return
+
+        try:
+            self._run_analysis(silent=True)
+            selected_pot, selected_cur = self._prepare_curve(self._measurement)
+            peaks = self._detect_peaks(selected_pot, selected_cur)
+
+            rows = list(self._last_rows)
+            ax = self.plot_widget.ax
+            if peaks:
+                for idx, (kind, ep, ip) in enumerate(peaks[:8], start=1):
+                    rows.append([
+                        f"{kind} {idx}",
+                        f"E={ep:.4f}, I={ip:.6g}",
+                        "V, 电流",
+                        "手动触发，按 5% prominence 检测",
+                    ])
+                    ax.scatter([ep], [ip], s=38, zorder=5)
+            else:
+                rows.append(["峰检测", "未检出明显峰", "", "手动触发，按 5% prominence 检测"])
+
+            self._last_rows = rows
+            set_table_rows(self.result_table, rows)
+            self.plot_widget.refresh()
+            self._fig_created = True
+            self.btn_export_plot.setEnabled(True)
+        except Exception as exc:
+            QMessageBox.critical(self, "峰检测失败", str(exc))
 
     def _fill_rs_from_eis(self):
         eis_measurements = [m for m in self._all_measurements if technique_value(m) == "EIS"]

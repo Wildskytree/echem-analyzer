@@ -12,11 +12,14 @@ if os.environ.get("QT_QPA_PLATFORM") == "offscreen" or not os.environ.get("DISPL
 else:
     matplotlib.use("Qt5Agg")
 
+from echem_core.plotting.fonts import configure_matplotlib_fonts
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 from PySide6.QtWidgets import QVBoxLayout, QWidget, QSizePolicy
 from PySide6.QtCore import Qt
+
+configure_matplotlib_fonts()
 
 
 class PlotWidget(QWidget):

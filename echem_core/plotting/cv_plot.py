@@ -156,15 +156,15 @@ def plot_cv(
     style: str = "acs_double",
     title: Optional[str] = None,
     save_path: Optional[str] = None,
-    annotate_peaks: bool = True,
+    annotate_peaks: bool = False,
 ) -> Figure:
     """绘制循环伏安（CV）曲线。
 
     以电位为横坐标、电流为纵坐标绘制 CV 曲线。多周期测量时，不同循环
     使用不同颜色区分，正向扫描为实线、反向扫描为虚线。
 
-    可选的峰标注功能使用 :func:`echem_core.analysis.cv.find_peaks` 检测
-    氧化峰和还原峰，并在图上标注峰电位与峰电流。
+    仅当 ``annotate_peaks=True`` 时，才使用
+    :func:`echem_core.analysis.cv.find_peaks` 检测氧化峰和还原峰并标注。
 
     Parameters
     ----------
@@ -179,7 +179,7 @@ def plot_cv(
         图片保存路径。若提供，根据文件扩展名推断保存格式
         （支持 png、pdf、svg、eps、jpg、tiff）。
     annotate_peaks : bool, optional
-        是否在图上标注氧化峰和还原峰。默认为 ``True``。
+        是否在图上标注氧化峰和还原峰。默认为 ``False``，避免自动峰检测。
 
     Returns
     -------

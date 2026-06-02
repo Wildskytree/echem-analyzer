@@ -159,7 +159,7 @@ class MainWindow(QMainWindow):
         self.project_tab = ProjectTab()
 
         self.tab_widget.addTab(self.data_browser_tab, "📂 数据浏览")
-        self.tab_widget.addTab(self.lsv_tab, "📈 LSV/ORR")
+        self.tab_widget.addTab(self.lsv_tab, "📈 LSV")
         self.tab_widget.addTab(self.cv_tab, "📊 CV 分析")
         self.tab_widget.addTab(self.eis_tab, "🔄 EIS")
         self.tab_widget.addTab(self.stability_tab, "⏱ 稳定性")
@@ -238,15 +238,10 @@ class MainWindow(QMainWindow):
             self, "导入电化学数据文件", "",
             "数据文件 (*.txt *.csv);;所有文件 (*)")
         if files:
-            for fp in files:
-                self.data_browser_tab._parse_and_add(fp)
-            all_count = len(self.data_browser_tab.get_all_measurements())
-            self.lbl_count.setText(f"测量数: {all_count}")
+            self.data_browser_tab.import_paths(files)
 
     def _import_folder(self):
         self.data_browser_tab._import_folder()
-        all_count = len(self.data_browser_tab.get_all_measurements())
-        self.lbl_count.setText(f"测量数: {all_count}")
 
     def _save_project(self):
         self.project_tab._save_project()
@@ -304,7 +299,7 @@ class MainWindow(QMainWindow):
                          f"<p><b>版本:</b> {self.APP_VERSION}</p>"
                          f"<p>电化学数据分析桌面工具</p>"
                          f"<p>技术栈: PySide6 + Matplotlib + NumPy/SciPy</p>"
-                         f"<p>支持 LSV/ORR、CV、EIS、CA/CP 稳定性分析</p>"
+                         f"<p>支持 LSV、CV、EIS、CA/CP 稳定性分析</p>"
                          f"<hr><p>© 2026 Echem Analyzer Team</p>")
 
     def closeEvent(self, event):

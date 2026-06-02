@@ -170,7 +170,7 @@ class CVTab(QWidget):
         self.cb_measurement.blockSignals(False)
         self._measurement = target
         self._update_selected_label()
-        self._run_peak_analysis(silent=True)
+        self._plot_current_curve()
 
     def set_measurement(self, measurement):
         """设置当前测量数据。"""
@@ -179,13 +179,47 @@ class CVTab(QWidget):
     def _on_measurement_changed(self, _index=None):
         self._measurement = self.cb_measurement.currentData()
         self._update_selected_label()
-        self._run_peak_analysis(silent=True)
+        self._plot_current_curve()
 
     def _update_selected_label(self):
         if self._measurement is None:
             self.lbl_selected.setText("未选择 CV 数据")
         else:
             self.lbl_selected.setText(measurement_label(self._measurement))
+
+    def _plot_current_curve(self):
+        """Plot the selected CV curve without running peak detection."""
+        if self._measurement is None:
+            self.plot_widget.clear()
+            self.plot_widget.refresh()
+            self.peak_table.setRowCount(0)
+            self._fig_created = False
+            self.btn_export_plot.setEnabled(False)
+            return
+
+        try:
+            m = self._measurement
+            pot = m.processed_potential if m.processed_potential is not None else m.raw_potential
+            cur = m.processed_current if m.processed_current is not None else m.raw_current
+
+            self.plot_widget.clear()
+            ax = self.plot_widget.ax
+            ax.plot(pot, cur, color="#1f77b4", linewidth=1.5, label=measurement_name(m))
+            ax.set_xlabel("E / V")
+            ax.set_ylabel("I / A")
+            apply_publication_style(ax)
+            set_auto_limits(ax, pot, cur)
+            ax.legend(fontsize=8)
+            self.peak_table.setRowCount(0)
+            self.plot_widget.refresh()
+            self._fig_created = True
+            self.btn_export_plot.setEnabled(True)
+        except Exception:
+            self.plot_widget.clear()
+            self.plot_widget.refresh()
+            self.peak_table.setRowCount(0)
+            self._fig_created = False
+            self.btn_export_plot.setEnabled(False)
 
     def _run_peak_analysis(self, checked=False, silent=False):
         """执行峰检测与分析。"""

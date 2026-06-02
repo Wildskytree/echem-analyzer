@@ -68,7 +68,7 @@ class ProjectTab(QWidget):
         <p><b>技术栈:</b> PySide6 + Matplotlib + NumPy/SciPy</p>
         <p><b>支持的分析:</b></p>
         <ul>
-        <li>LSV/ORR: E₁/₂, E_onset, Tafel 斜率, K-L 分析</li>
+        <li>LSV: E₁/₂, E_onset, Tafel 斜率, K-L 分析</li>
         <li>CV: 峰检测, Cdl, ECSA</li>
         <li>EIS: Nyquist, Bode 图, Rs/Rct</li>
         <li>CA/CP 稳定性: 保持率, 指数衰减拟合, 分段统计</li>

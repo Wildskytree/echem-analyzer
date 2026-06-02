@@ -60,6 +60,10 @@ def parse_chi_file(filepath: str, encoding: str = None) -> Measurement:
         raise ValueError(f"无法解码文件: {filepath}。请指定 encoding 参数。")
 
     lines = content.splitlines()
+    if _is_csstudio_file(lines):
+        from echem_core.io.corrtest_parser import parse_corrtest_file
+
+        return parse_corrtest_file(filepath)
 
     # 定位表头行和数据起始行
     header_row = None
@@ -76,9 +80,7 @@ def parse_chi_file(filepath: str, encoding: str = None) -> Measurement:
         # 检测列名行：包含 Potential 或 Current 或 Time
         if any(kw in stripped.lower() for kw in ["potential", "current", "time", "frequency"]):
             header_row = i
-            column_names = [c.strip() for c in stripped.replace("\t", " ").split(",")]
-            column_names = [c for c in column_names if c]
-            column_names = [c.split("/")[0].strip() if "/" in c else c.strip() for c in column_names]
+            column_names = _split_header_columns(stripped)
             data_start = i + 1
             # 跳过空行
             while data_start < len(lines) and not lines[data_start].strip():
@@ -147,21 +149,89 @@ def parse_chi_file(filepath: str, encoding: str = None) -> Measurement:
     )
 
 
+def _is_csstudio_file(lines: list) -> bool:
+    """Return True for CorrTest CSStudio exports with gzip metadata headers."""
+    for line in lines:
+        stripped = line.lstrip("\ufeff").strip()
+        if not stripped:
+            continue
+        return stripped.startswith("CSStudioFile") and "H4sI" in stripped
+    return False
+
+
+def _split_header_columns(line: str) -> list:
+    stripped = line.strip()
+    if "\t" in stripped:
+        parts = stripped.split("\t")
+    elif "," in stripped:
+        parts = stripped.split(",")
+    else:
+        parts = stripped.split()
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _normalize_column_name(name: str) -> str:
+    return (
+        name.strip()
+        .lower()
+        .replace(" ", "")
+        .replace("\u00b2", "2")
+        .replace("\u03a9", "ohm")
+        .replace("\u2126", "ohm")
+        .replace("\u2032", "'")
+        .replace("\u2019", "'")
+        .replace("\u2033", '"')
+    )
+
+
+def _is_potential_column(name: str) -> bool:
+    return any(
+        token in name
+        for token in ("potential", "potent", "volt", "e(v)", "e/v", "e/")
+    )
+
+
+def _is_current_column(name: str) -> bool:
+    return any(
+        token in name
+        for token in ("current", "curr", "ampere", "i(a", "i/a", "i/")
+    )
+
+
+def _is_time_column(name: str) -> bool:
+    return any(token in name for token in ("time", "t(s)", "t/s", "sec"))
+
+
+def _is_frequency_column(name: str) -> bool:
+    return "freq" in name or name in {"f(hz)", "f/hz", "frequency"}
+
+
+def _is_impedance_column(name: str) -> bool:
+    return any(
+        token in name
+        for token in ("z'", 'z"', "z''", "zreal", "z_real", "zimag", "z_imag", "impedance")
+    )
+
+
 def _detect_technique(
     column_names: list, data: np.ndarray
 ) -> Technique:
     """根据列名和数据特征检测电化学技术类型。"""
-    col_lower = [c.lower() for c in column_names]
+    col_lower = [_normalize_column_name(c) for c in column_names]
 
-    has_frequency = any("freq" in c for c in col_lower)
-    has_impedance = any(k in c for k in ("z'", "z\"", "z_real", "z_imag", "impedance") for c in col_lower)
+    has_frequency = any(_is_frequency_column(c) for c in col_lower)
+    has_impedance = any(_is_impedance_column(c) for c in col_lower)
 
     if has_frequency and has_impedance:
         return Technique.EIS
 
-    if "time" in col_lower and "potential" not in col_lower:
-        # 没有电位列，只有电流 vs 时间
+    has_time = any(_is_time_column(c) for c in col_lower)
+    has_potential = any(_is_potential_column(c) for c in col_lower)
+    has_current = any(_is_current_column(c) for c in col_lower)
+    if has_time and has_current and not has_potential:
         return Technique.CA
+    if has_time and has_potential and not has_current:
+        return Technique.CP
 
     # 默认基于数据特征判断：如果电位单调变化 -> LSV，否则可能是 CV
     if data.shape[1] >= 1:
@@ -180,7 +250,7 @@ def _extract_columns(
     column_names: list, data: np.ndarray, technique: Technique
 ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
     """从数据矩阵中提取电位、电流和时间列。"""
-    col_lower = [c.lower() for c in column_names]
+    col_lower = [_normalize_column_name(c) for c in column_names]
     ncols = data.shape[1]
 
     potential = None
@@ -191,7 +261,7 @@ def _extract_columns(
     for i, c in enumerate(col_lower):
         if i >= ncols:
             break
-        if any(k in c for k in ("potential", "volt", "e / v", "e (v)", "potent")):
+        if _is_potential_column(c):
             potential = data[:, i]
             break
     if potential is None and ncols >= 1:
@@ -201,7 +271,7 @@ def _extract_columns(
     for i, c in enumerate(col_lower):
         if i >= ncols:
             break
-        if any(k in c for k in ("current", "ampere", "i / a", "i (a)", "curr")):
+        if _is_current_column(c):
             current = data[:, i]
             break
     if current is None and ncols >= 2:
@@ -213,7 +283,7 @@ def _extract_columns(
     for i, c in enumerate(col_lower):
         if i >= ncols:
             break
-        if any(k in c for k in ("time", "t / s", "t (s)", "sec")):
+        if _is_time_column(c):
             time = data[:, i]
             break
     if time is None and ncols >= 3:

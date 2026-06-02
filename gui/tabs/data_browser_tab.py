@@ -6,14 +6,76 @@ import numpy as np
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                QFileDialog, QLabel, QTableWidget, QTableWidgetItem,
                                QSplitter, QLineEdit, QGroupBox, QHeaderView,
-                               QMessageBox, QMenu, QGridLayout)
-from PySide6.QtCore import Qt, Signal
+                               QMessageBox, QMenu, QGridLayout, QProgressDialog)
+from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot
 
 from gui.widgets.measurement_list import MeasurementTreeWidget
 from gui.widgets.analysis_common import measurement_label, measurement_name, technique_value
 from echem_core.io.chi_parser import parse_chi_file
 from echem_core.io.corrtest_parser import parse_corrtest_file
 from echem_core.io.csv_parser import parse_csv
+
+
+def _parse_measurement_file(filepath):
+    """Parse a supported measurement file without touching GUI objects."""
+    last_error = None
+    ext = os.path.splitext(filepath)[1].lower()
+
+    if ext == ".txt":
+        parsers = [parse_chi_file, parse_corrtest_file]
+    elif ext == ".csv":
+        parsers = [parse_csv]
+    else:
+        raise ValueError(f"不支持的文件类型: {ext or '无扩展名'}")
+
+    for parser in parsers:
+        try:
+            return parser(filepath)
+        except Exception as exc:
+            last_error = exc
+
+    raise ValueError(str(last_error) if last_error is not None else "无法识别文件格式")
+
+
+class FileImportWorker(QObject):
+    """Background parser for batch imports."""
+
+    progress = Signal(int, int, str)
+    imported = Signal(object, str)
+    failed = Signal(str, str)
+    finished = Signal(int, int, bool)
+
+    def __init__(self, paths):
+        super().__init__()
+        self._paths = list(paths)
+        self._cancelled = False
+
+    @Slot()
+    def run(self):
+        success_count = 0
+        failure_count = 0
+        total = len(self._paths)
+
+        for index, filepath in enumerate(self._paths, start=1):
+            if self._cancelled:
+                break
+
+            basename = os.path.basename(filepath)
+            self.progress.emit(index - 1, total, basename)
+            try:
+                measurement = _parse_measurement_file(filepath)
+            except Exception as exc:
+                failure_count += 1
+                self.failed.emit(filepath, str(exc))
+            else:
+                success_count += 1
+                self.imported.emit(measurement, filepath)
+            self.progress.emit(index, total, basename)
+
+        self.finished.emit(success_count, failure_count, self._cancelled)
+
+    def cancel(self):
+        self._cancelled = True
 
 
 class DataBrowserTab(QWidget):
@@ -33,6 +95,10 @@ class DataBrowserTab(QWidget):
         self._last_imported = None
         self._drop_highlight = False
         self._default_style_sheet = self.styleSheet()
+        self._import_thread = None
+        self._import_worker = None
+        self._progress_dialog = None
+        self._import_failures = []
         self._setup_ui()
 
     def dragEnterEvent(self, event):
@@ -61,8 +127,7 @@ class DataBrowserTab(QWidget):
         if not paths:
             event.ignore()
             return
-        for filepath in paths:
-            self._parse_and_add(filepath)
+        self.import_paths(paths)
         event.acceptProposedAction()
 
     def _drop_file_paths(self, event):
@@ -182,48 +247,140 @@ class DataBrowserTab(QWidget):
         )
         if not files:
             return
-        for fp in files:
-            self._parse_and_add(fp)
+        self.import_paths(files)
 
     def _import_folder(self):
         """导入文件夹中所有支持的文件。"""
         folder = QFileDialog.getExistingDirectory(self, "选择数据文件夹")
         if not folder:
             return
-        for fname in sorted(os.listdir(folder)):
-            if fname.lower().endswith(('.txt', '.csv')):
-                self._parse_and_add(os.path.join(folder, fname))
+        paths = [
+            os.path.join(folder, fname)
+            for fname in sorted(os.listdir(folder))
+            if fname.lower().endswith((".txt", ".csv"))
+        ]
+        self.import_paths(paths)
+
+    def import_paths(self, paths):
+        """后台导入一个或多个文件。"""
+        paths = [
+            path for path in paths
+            if path and os.path.isfile(path) and path.lower().endswith((".txt", ".csv"))
+        ]
+        if not paths:
+            QMessageBox.information(self, "导入文件", "没有找到支持的 .txt 或 .csv 文件。")
+            return
+        if self._import_thread is not None and self._import_thread.isRunning():
+            QMessageBox.information(self, "正在导入", "已有导入任务正在运行，请等待完成或取消。")
+            return
+
+        self._import_failures = []
+        self._set_import_controls_enabled(False)
+        self.tree.setSortingEnabled(False)
+
+        self._progress_dialog = QProgressDialog("准备导入...", "取消", 0, len(paths), self)
+        self._progress_dialog.setWindowTitle("导入数据")
+        self._progress_dialog.setWindowModality(Qt.WindowModal)
+        self._progress_dialog.setMinimumDuration(0)
+        self._progress_dialog.setAutoClose(False)
+        self._progress_dialog.setAutoReset(False)
+        self._progress_dialog.show()
+
+        thread = QThread(self)
+        worker = FileImportWorker(paths)
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_import_progress)
+        worker.imported.connect(self._on_worker_imported)
+        worker.failed.connect(self._on_worker_failed)
+        worker.finished.connect(self._on_import_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._on_import_thread_finished)
+        self._progress_dialog.canceled.connect(lambda: worker.cancel())
+
+        self._import_thread = thread
+        self._import_worker = worker
+        thread.start()
 
     def _parse_and_add(self, filepath):
         """解析文件并添加到列表。"""
-        last_error = None
-        ext = os.path.splitext(filepath)[1].lower()
-
-        # Try each parser in order.
-        if ext == '.txt':
-            parsers = [parse_chi_file, parse_corrtest_file]
-        else:
-            parsers = [parse_csv]
-
-        for parser in parsers:
-            try:
-                m = parser(filepath)
-                self._measurements.append(m)
-                self._last_imported = m
-                self.tree.add_measurement(m)
-                self.tree.select_measurement(m)
-                self.measurement_imported.emit(m)
-                self.measurements_changed.emit(self.get_all_measurements())
-                self._refresh_quick_start()
-                return m
-            except Exception as e:
-                last_error = e
-                continue
-
-        if last_error is not None:
+        try:
+            measurement = _parse_measurement_file(filepath)
+            self._add_measurement(measurement, select=True, emit_changed=True)
+            return measurement
+        except Exception as last_error:
             QMessageBox.warning(self, "导入失败",
                                 f"无法导入文件:\n{os.path.basename(filepath)}\n\n错误: {last_error}")
-        return None
+            return None
+
+    def _add_measurement(self, measurement, select=False, emit_changed=False):
+        self._measurements.append(measurement)
+        self._last_imported = measurement
+        self.tree.add_measurement(measurement)
+        self.measurement_imported.emit(measurement)
+        if emit_changed:
+            self.measurements_changed.emit(self.get_all_measurements())
+        self._refresh_quick_start()
+        if select:
+            self.tree.select_measurement(measurement)
+
+    def _set_import_controls_enabled(self, enabled):
+        self.btn_import_files.setEnabled(enabled)
+        self.btn_import_folder.setEnabled(enabled)
+        self.btn_clear.setEnabled(enabled)
+        self.btn_delete.setEnabled(enabled)
+
+    def _on_import_progress(self, current, total, filename):
+        dialog = self._progress_dialog
+        if dialog is None:
+            return
+        dialog.setMaximum(total)
+        dialog.setLabelText(
+            f"正在导入 {current + 1 if current < total else current}/{total}: {filename}"
+        )
+        dialog.setValue(current)
+
+    def _on_worker_imported(self, measurement, _filepath):
+        self._add_measurement(measurement, select=False, emit_changed=False)
+
+    def _on_worker_failed(self, filepath, error):
+        self._import_failures.append((filepath, error))
+
+    def _on_import_finished(self, success_count, failure_count, cancelled):
+        self.tree.setSortingEnabled(True)
+        self._set_import_controls_enabled(True)
+
+        if self._progress_dialog is not None:
+            self._progress_dialog.close()
+            self._progress_dialog.deleteLater()
+            self._progress_dialog = None
+
+        self._refresh_quick_start()
+        self.measurements_changed.emit(self.get_all_measurements())
+        if self._last_imported is not None:
+            self.tree.select_measurement(self._last_imported)
+
+        if failure_count:
+            shown = self._import_failures[:5]
+            detail = "\n".join(
+                f"{os.path.basename(path)}: {error}" for path, error in shown
+            )
+            more = "" if len(self._import_failures) <= 5 else f"\n...另有 {len(self._import_failures) - 5} 个失败"
+            QMessageBox.warning(
+                self,
+                "导入完成",
+                f"成功导入 {success_count} 个文件，失败 {failure_count} 个。"
+                f"{' 已取消。' if cancelled else ''}\n\n{detail}{more}",
+            )
+        elif cancelled:
+            QMessageBox.information(self, "导入已取消", f"已导入 {success_count} 个文件。")
+
+    def _on_import_thread_finished(self):
+        self._import_thread = None
+        self._import_worker = None
 
     def _clear_all(self):
         """清空所有数据。"""

@@ -28,11 +28,17 @@ from gui.widgets.analysis_common import (
     format_float,
     measurement_label,
     measurement_name,
-    set_auto_limits,
     set_table_rows,
     technique_value,
 )
-from echem_core.analysis.eis import bode_data, estimate_rct, estimate_rs, nyquist_data
+from echem_core.analysis.eis import (
+    bode_data,
+    estimate_rct,
+    estimate_rs,
+    impedance_axis_limits,
+    nyquist_axis_limits,
+    nyquist_data,
+)
 
 
 class EISTab(QWidget):
@@ -177,32 +183,9 @@ class EISTab(QWidget):
             ax.set_ylabel("-Z'' / Ω")
             ax.set_title(f"Nyquist - {measurement_name(self._measurement)}")
             apply_publication_style(ax)
-            set_auto_limits(ax, zr, neg_zi, margin=0.1, equal=False)
-            ax.autoscale_view(tight=False, scaley=True, scalex=True)
-            finite = np.isfinite(zr) & np.isfinite(neg_zi)
-            if np.any(finite):
-                finite_zr = zr[finite]
-                finite_neg_zi = neg_zi[finite]
-                xmin, xmax = float(np.min(finite_zr)), float(np.max(finite_zr))
-                ymin, ymax = float(np.min(finite_neg_zi)), float(np.max(finite_neg_zi))
-                data_xrange = xmax - xmin
-                data_yrange = ymax - ymin
-                axis_xrange = abs(float(ax.get_xlim()[1] - ax.get_xlim()[0]))
-                axis_yrange = abs(float(ax.get_ylim()[1] - ax.get_ylim()[0]))
-                if (
-                    np.isfinite(axis_xrange)
-                    and np.isfinite(axis_yrange)
-                    and (
-                        axis_xrange > data_xrange * 100.0
-                        or axis_yrange > data_yrange * 100.0
-                    )
-                ):
-                    ax.relim()
-                    ax.autoscale(enable=True, axis="both", tight=True)
-                    xpad = max(data_xrange * 0.05, 2.0)
-                    ypad = max(data_yrange * 0.05, 2.0)
-                    ax.set_xlim(xmin - xpad, xmax + xpad)
-                    ax.set_ylim(ymin - ypad, ymax + ypad)
+            xlim, ylim = nyquist_axis_limits(z_real, z_imag, margin=0.08)
+            ax.set_xlim(*xlim)
+            ax.set_ylim(*ylim)
 
             rs = estimate_rs(z_real, frequency)
             rct = estimate_rct(z_real, z_imag, rs)
@@ -243,12 +226,8 @@ class EISTab(QWidget):
                 if f_pad <= 0 or not np.isfinite(f_pad):
                     f_pad = 0.2
                 ax1.set_xlim(10 ** (float(np.min(log_freq)) - f_pad), 10 ** (float(np.max(log_freq)) + f_pad))
-                for axis, values in ((ax1, z_mod), (ax2, phase)):
-                    ymin, ymax = float(np.min(values)), float(np.max(values))
-                    yrange = ymax - ymin
-                    if yrange <= 0 or not np.isfinite(yrange):
-                        yrange = max(abs(ymin) * 0.1, 1.0)
-                    axis.set_ylim(ymin - yrange * 0.1, ymax + yrange * 0.1)
+                ax1.set_ylim(*impedance_axis_limits(z_mod, margin=0.1))
+                ax2.set_ylim(*impedance_axis_limits(phase, margin=0.1))
                 self.bode_plot.figure.tight_layout()
             self.bode_plot.refresh()
 
