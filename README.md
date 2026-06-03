@@ -93,7 +93,9 @@ echem_core/
 
 如果这个工具帮你节省了整理数据的时间，欢迎赞助维护：
 
-- 微信赞赏码：`WECHAT_REWARD_QR_CODE_URL`
+- 微信赞赏码：
+
+  <img src="assets/wechat_reward.jpg" alt="微信赞赏码" width="200"/>
 - 爱发电：`AFDIAN_SPONSOR_URL`
 
 ## 📄 License
