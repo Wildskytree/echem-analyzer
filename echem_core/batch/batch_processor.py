@@ -118,9 +118,24 @@ class BatchProcessor:
             try:
                 suffix = fp.suffix.lower()
                 if suffix == ".txt":
-                    m = parse_chi_file(str(fp))
+                    parsers = [parse_chi_file]
+                elif suffix == ".csv":
+                    parsers = [parse_csv, parse_chi_file]
                 else:
-                    m = parse_csv(str(fp))
+                    raise ValueError(f"不支持的文件类型: {suffix or '无扩展名'}")
+
+                last_error = None
+                for parser in parsers:
+                    try:
+                        m = parser(str(fp))
+                        break
+                    except Exception as exc:
+                        last_error = exc
+                else:
+                    raise ValueError(
+                        str(last_error) if last_error is not None else "无法识别文件格式"
+                    )
+
                 loaded.append(m)
                 if verbose:
                     print(f"  ✓ {fp.name}  →  {m.technique.value}  ({m.file_hash[:8]}...)")

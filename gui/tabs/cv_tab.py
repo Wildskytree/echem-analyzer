@@ -1,11 +1,14 @@
 """CV 分析标签页。"""
 
+import os
+
 import numpy as np
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                QLabel, QComboBox, QDoubleSpinBox, QGroupBox,
                                QFormLayout, QSplitter, QTextEdit, QMessageBox,
                                QFileDialog, QTabWidget, QTableWidget,
-                               QTableWidgetItem, QCheckBox,
+                               QTableWidgetItem, QCheckBox, QDialog,
+                               QDialogButtonBox, QSpinBox,
                                QListWidget, QListWidgetItem, QLineEdit,
                                QSizePolicy, QMenu)
 from PySide6.QtCore import Qt
@@ -88,6 +91,28 @@ class CVTab(QWidget):
         left_layout.addWidget(self.btn_export_plot)
         left_layout.addWidget(self.btn_copy_results)
         left_layout.addWidget(self.btn_export_results)
+
+        # CV 分圈导出
+        cycle_group = QGroupBox("CV 分圈导出")
+        cycle_layout = QVBoxLayout()
+        cycle_select_layout = QHBoxLayout()
+        cycle_select_layout.addWidget(QLabel("圈数:"))
+        self.spin_cycle = QSpinBox()
+        self.spin_cycle.setRange(1, 99)
+        self.spin_cycle.setValue(1)
+        cycle_select_layout.addWidget(self.spin_cycle, 1)
+        cycle_layout.addLayout(cycle_select_layout)
+
+        self.btn_export_cycle = QPushButton("导出单圈")
+        self.btn_export_cycle.clicked.connect(self._export_single_cycle)
+        self.btn_export_cycle.setEnabled(False)
+        self.btn_split_by_voltage = QPushButton("按电压分圈")
+        self.btn_split_by_voltage.clicked.connect(self._split_cycles_by_voltage)
+        self.btn_split_by_voltage.setEnabled(False)
+        cycle_layout.addWidget(self.btn_export_cycle)
+        cycle_layout.addWidget(self.btn_split_by_voltage)
+        cycle_group.setLayout(cycle_layout)
+        left_layout.addWidget(cycle_group)
 
         # Cdl / ECSA 部分
         cdl_group = QGroupBox("Cdl / ECSA 计算")
@@ -237,6 +262,325 @@ class CVTab(QWidget):
             )
         )
 
+    def _set_cycle_export_enabled(self, enabled):
+        self.btn_export_cycle.setEnabled(enabled)
+        self.btn_split_by_voltage.setEnabled(enabled)
+
+    def _current_cv_arrays(self):
+        if self._measurement is None:
+            raise ValueError("请先选择 CV 数据。")
+
+        measurement = self._measurement
+        potential = (
+            measurement.processed_potential
+            if measurement.processed_potential is not None
+            else measurement.raw_potential
+        )
+        current = (
+            measurement.processed_current
+            if measurement.processed_current is not None
+            else measurement.raw_current
+        )
+
+        potential = np.asarray(potential, dtype=float)
+        current = np.asarray(current, dtype=float)
+        n = min(potential.size, current.size)
+        potential = potential[:n]
+        current = current[:n]
+        finite = np.isfinite(potential) & np.isfinite(current)
+        potential = potential[finite]
+        current = current[finite]
+        if potential.size < 5:
+            raise ValueError("有效 CV 数据点不足，无法分圈。")
+        return potential, current
+
+    def _detect_cv_segments(self, potential, current):
+        potential = np.asarray(potential, dtype=float)
+        current = np.asarray(current, dtype=float)
+        if potential.ndim != 1 or current.ndim != 1 or potential.size != current.size:
+            return []
+        if potential.size < 5:
+            return []
+
+        span = float(np.max(potential) - np.min(potential))
+        if not np.isfinite(span) or span <= 0:
+            return []
+
+        diff = np.diff(potential)
+        tol = max(span * 1e-8, 1e-12)
+        signs = np.zeros(diff.shape, dtype=int)
+        signs[diff > tol] = 1
+        signs[diff < -tol] = -1
+        nonzero = np.flatnonzero(signs)
+        if nonzero.size == 0:
+            return []
+
+        runs = []
+        run_start = int(nonzero[0])
+        run_sign = int(signs[run_start])
+        prev_idx = run_start
+        for idx_raw in nonzero[1:]:
+            idx = int(idx_raw)
+            sign = int(signs[idx])
+            if sign != run_sign:
+                runs.append((run_sign, run_start, prev_idx))
+                run_start = idx
+                run_sign = sign
+            prev_idx = idx
+        runs.append((run_sign, run_start, prev_idx))
+
+        min_span = max(span * 1e-4, tol)
+        segments = []
+        for sign, start_diff, end_diff in runs:
+            start = int(start_diff)
+            end = int(end_diff) + 1
+            if end - start + 1 < 3:
+                continue
+            if abs(float(potential[end] - potential[start])) < min_span:
+                continue
+            segments.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "direction": "positive" if sign > 0 else "negative",
+                    "points": end - start + 1,
+                }
+            )
+        return segments
+
+    def _detect_cv_cycles(self, potential, current):
+        segments = self._detect_cv_segments(potential, current)
+        cycles = []
+        for idx in range(0, len(segments) - 1, 2):
+            start = int(segments[idx]["start"])
+            end = int(segments[idx + 1]["end"])
+            if end <= start:
+                continue
+            cycle_potential = potential[start : end + 1]
+            cycle_current = current[start : end + 1]
+            cycles.append(
+                {
+                    "number": len(cycles) + 1,
+                    "segments": (idx + 1, idx + 2),
+                    "potential": cycle_potential,
+                    "current": cycle_current,
+                    "point_count": int(cycle_potential.size),
+                }
+            )
+        return cycles, segments
+
+    def _txt_path(self, path):
+        if path and not os.path.splitext(path)[1]:
+            return f"{path}.txt"
+        return path
+
+    def _write_cycle_file(self, path, potential, current):
+        with open(path, "w", encoding="utf-8", newline="") as handle:
+            handle.write("Potential/V\tCurrent/A\n")
+            for value_e, value_i in zip(potential, current):
+                handle.write(f"{value_e:.12g}\t{value_i:.12g}\n")
+
+    def _export_single_cycle(self):
+        if self._measurement is None:
+            QMessageBox.warning(self, "提示", "请先选择 CV 数据。")
+            return
+
+        try:
+            potential, current = self._current_cv_arrays()
+            cycles, segments = self._detect_cv_cycles(potential, current)
+            if not cycles:
+                QMessageBox.warning(
+                    self,
+                    "分圈失败",
+                    "未检测到完整 CV 圈。请确认数据至少包含两个连续扫描段。",
+                )
+                return
+
+            cycle_number = self.spin_cycle.value()
+            if cycle_number > len(cycles):
+                QMessageBox.warning(
+                    self,
+                    "分圈失败",
+                    f"当前数据仅检测到 {len(cycles)} 圈（{len(segments)} 段）。",
+                )
+                return
+
+            cycle = cycles[cycle_number - 1]
+            default_name = f"cv_cycle_{cycle_number}.txt"
+            path, _ = QFileDialog.getSaveFileName(
+                self,
+                "导出单圈",
+                default_name,
+                "文本文件 (*.txt);;所有文件 (*)",
+            )
+            if not path:
+                return
+            path = self._txt_path(path)
+            self._write_cycle_file(path, cycle["potential"], cycle["current"])
+            QMessageBox.information(self, "导出成功", f"单圈数据已保存到:\n{path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", str(exc))
+
+    def _ask_voltage_range(self, potential):
+        pot_min = float(np.min(potential))
+        pot_max = float(np.max(potential))
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("按电压分圈")
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+
+        spin_low = QDoubleSpinBox()
+        spin_low.setRange(-1e6, 1e6)
+        spin_low.setDecimals(6)
+        spin_low.setSingleStep(max((pot_max - pot_min) / 100.0, 0.001))
+        spin_low.setSuffix(" V")
+        spin_low.setValue(pot_min)
+
+        spin_high = QDoubleSpinBox()
+        spin_high.setRange(-1e6, 1e6)
+        spin_high.setDecimals(6)
+        spin_high.setSingleStep(max((pot_max - pot_min) / 100.0, 0.001))
+        spin_high.setSuffix(" V")
+        spin_high.setValue(pot_max)
+
+        form.addRow("最低电位:", spin_low)
+        form.addRow("最高电位:", spin_high)
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.Accepted:
+            return None
+
+        low = spin_low.value()
+        high = spin_high.value()
+        if low >= high:
+            QMessageBox.warning(self, "电压范围无效", "最低电位必须小于最高电位。")
+            return None
+        return low, high
+
+    def _choose_cycles_for_export(self, cycles):
+        exportable = [cycle for cycle in cycles if cycle["point_count"] > 0]
+        if not exportable:
+            QMessageBox.warning(self, "分圈失败", "所选电压范围内没有可导出的数据点。")
+            return None
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("选择导出圈数")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("选择要导出的圈数:"))
+
+        list_widget = QListWidget()
+        all_item = QListWidgetItem(
+            f"全部 ({len(exportable)} 圈，共 {sum(c['point_count'] for c in exportable)} 点)"
+        )
+        all_item.setData(Qt.UserRole, "all")
+        list_widget.addItem(all_item)
+
+        for cycle in cycles:
+            item = QListWidgetItem(f"第 {cycle['number']} 圈 - {cycle['point_count']} 点")
+            item.setData(Qt.UserRole, cycle["number"])
+            if cycle["point_count"] <= 0:
+                item.setFlags(item.flags() & ~Qt.ItemIsEnabled)
+            list_widget.addItem(item)
+
+        list_widget.setCurrentRow(0)
+        layout.addWidget(list_widget)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.Accepted:
+            return None
+
+        item = list_widget.currentItem()
+        return item.data(Qt.UserRole) if item is not None else None
+
+    def _split_cycles_by_voltage(self):
+        if self._measurement is None:
+            QMessageBox.warning(self, "提示", "请先选择 CV 数据。")
+            return
+
+        try:
+            potential, current = self._current_cv_arrays()
+            cycles, segments = self._detect_cv_cycles(potential, current)
+            if not cycles:
+                QMessageBox.warning(
+                    self,
+                    "分圈失败",
+                    "未检测到完整 CV 圈。请确认数据至少包含两个连续扫描段。",
+                )
+                return
+
+            voltage_range = self._ask_voltage_range(potential)
+            if voltage_range is None:
+                return
+            low, high = voltage_range
+
+            ranged_cycles = []
+            for cycle in cycles:
+                mask = (cycle["potential"] >= low) & (cycle["potential"] <= high)
+                cycle_potential = cycle["potential"][mask]
+                cycle_current = cycle["current"][mask]
+                ranged_cycles.append(
+                    {
+                        "number": cycle["number"],
+                        "potential": cycle_potential,
+                        "current": cycle_current,
+                        "point_count": int(cycle_potential.size),
+                    }
+                )
+
+            choice = self._choose_cycles_for_export(ranged_cycles)
+            if choice is None:
+                return
+
+            exportable = [cycle for cycle in ranged_cycles if cycle["point_count"] > 0]
+            if choice == "all":
+                directory = QFileDialog.getExistingDirectory(self, "选择保存目录")
+                if not directory:
+                    return
+                saved_paths = []
+                for cycle in exportable:
+                    path = os.path.join(directory, f"cv_cycle_{cycle['number']}.txt")
+                    self._write_cycle_file(path, cycle["potential"], cycle["current"])
+                    saved_paths.append(path)
+                QMessageBox.information(
+                    self,
+                    "导出成功",
+                    f"已保存 {len(saved_paths)} 个单圈文件到:\n{directory}",
+                )
+                return
+
+            selected = next(
+                (cycle for cycle in exportable if cycle["number"] == choice),
+                None,
+            )
+            if selected is None:
+                QMessageBox.warning(self, "导出失败", "未找到所选圈数的数据。")
+                return
+
+            default_name = f"cv_cycle_{selected['number']}.txt"
+            path, _ = QFileDialog.getSaveFileName(
+                self,
+                "导出分圈数据",
+                default_name,
+                "文本文件 (*.txt);;所有文件 (*)",
+            )
+            if not path:
+                return
+            path = self._txt_path(path)
+            self._write_cycle_file(path, selected["potential"], selected["current"])
+            QMessageBox.information(self, "导出成功", f"单圈数据已保存到:\n{path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "分圈失败", str(exc))
+
     def _plot_current_curve(self):
         """Plot the selected CV curve without running peak detection."""
         if self._measurement is None:
@@ -245,6 +589,7 @@ class CVTab(QWidget):
             self.peak_table.setRowCount(0)
             self._fig_created = False
             self.btn_export_plot.setEnabled(False)
+            self._set_cycle_export_enabled(False)
             return
 
         try:
@@ -267,12 +612,14 @@ class CVTab(QWidget):
             self.plot_widget.refresh()
             self._fig_created = True
             self.btn_export_plot.setEnabled(True)
+            self._set_cycle_export_enabled(True)
         except Exception:
             self.plot_widget.clear()
             self.plot_widget.refresh()
             self.peak_table.setRowCount(0)
             self._fig_created = False
             self.btn_export_plot.setEnabled(False)
+            self._set_cycle_export_enabled(False)
 
     def _run_peak_analysis(self, checked=False, silent=False):
         """执行峰检测与分析。"""

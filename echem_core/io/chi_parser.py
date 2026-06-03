@@ -562,7 +562,6 @@ def _parse_chi_metadata(lines: list, filepath: str) -> dict:
             if len(parts) > 1:
                 metadata["reference_electrode"] = parts[1].strip()
         if "rpm" in lower or "rotation" in lower:
-            import re
             match = re.search(r"(\d+)", line)
             if match:
                 metadata["rotation_rpm"] = float(match.group(1))
@@ -575,6 +574,16 @@ def _parse_chi_metadata(lines: list, filepath: str) -> dict:
                     scan_rate /= 1000.0
                     metadata["scan_rate_mV_s"] = float(match.group(1))
                 metadata["scan_rate"] = scan_rate
+        if lower.startswith("segment") and "=" in line:
+            match = re.search(r"(\d+)", line)
+            if match:
+                metadata["segment_count"] = int(match.group(1))
+        if lower.startswith("init p/n") and "=" in line:
+            value = line.split("=", 1)[1].strip().upper()
+            if value.startswith("P"):
+                metadata["initial_direction"] = "positive"
+            elif value.startswith("N"):
+                metadata["initial_direction"] = "negative"
 
     return metadata
 

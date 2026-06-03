@@ -25,7 +25,7 @@ def _parse_measurement_file(filepath):
     if ext == ".txt":
         parsers = [parse_chi_file, parse_corrtest_file]
     elif ext == ".csv":
-        parsers = [parse_csv]
+        parsers = [parse_csv, parse_chi_file]
     else:
         raise ValueError(f"不支持的文件类型: {ext or '无扩展名'}")
 
