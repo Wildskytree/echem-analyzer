@@ -16,6 +16,8 @@
 - **期刊级图表** — ACS/RSC/Wiley 尺寸预设、色盲友好配色，导出 TIFF/PNG/SVG/PDF
 - **批量处理** — 文件夹导入 → 统一 recipe → Excel 汇总 → 批量出图
 
+[📖 使用说明书](USER_GUIDE.md)
+
 ## 🚀 快速安装
 
 ```bash
