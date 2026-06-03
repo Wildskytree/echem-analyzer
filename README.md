@@ -10,7 +10,7 @@
 - **电位换算** — Ag/AgCl、SCE、Hg/HgO → RHE，支持 pH 和温度修正
 - **电流归一化** — 几何面积归一化 (mA/cm²)、负载量归一化 (mA/mg)、ECSA 归一化
 - **背景扣除** — 自动按命名规则匹配空白
-- **LSV/ORR 分析** — E1/2、j_L、Tafel 斜率、K-L 分析（电子转移数 n）
+- **LSV 分析** — E1/2、j_L、Tafel 斜率、K-L 分析（电子转移数 n）
 - **CV 分析** — 峰值识别、Cdl、ECSA
 - **EIS 分析** — Nyquist/Bode 图、Rs/Rct 估计
 - **期刊级图表** — ACS/RSC/Wiley 尺寸预设、色盲友好配色，导出 TIFF/PNG/SVG/PDF
@@ -77,7 +77,7 @@ echem_core/
 ├── io/          数据导入 (CHI、CSV 解析器)
 ├── model/       数据模型 (Measurement, Technique)
 ├── processing/  数据处理 (电位换算、归一化、背景扣除)
-├── analysis/    分析算法 (LSV/ORR、CV、EIS)
+├── analysis/    分析算法 (LSV、CV、EIS)
 ├── plotting/    图表绘制 (期刊风格模板)
 ├── batch/       批处理引擎和报告导出
 └── cli.py       命令行入口
