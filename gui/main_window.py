@@ -1,13 +1,15 @@
 """Echem Analyzer 主窗口。"""
 
+import json
 import os
 import sys
 from PySide6.QtWidgets import (QMainWindow, QTabWidget, QStatusBar,
                                QMenuBar, QMenu, QToolBar, QMessageBox,
                                QFileDialog, QVBoxLayout, QWidget, QLabel,
                                QSplitter, QApplication, QStyleFactory)
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QUrl
 from PySide6.QtGui import QAction, QKeySequence, QIcon, QPalette, QColor
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 from gui.tabs.data_browser_tab import DataBrowserTab
 from gui.tabs.lsv_tab import LSVTab
@@ -17,6 +19,12 @@ from gui.tabs.stability_tab import StabilityTab
 from gui.tabs.batch_tab import BatchTab
 from gui.tabs.project_tab import ProjectTab
 from gui.app_info import APP_DISPLAY_VERSION, APP_FULL_NAME, APP_NAME, APP_ORGANIZATION
+
+
+GITHUB_REPOSITORY_URL = "https://github.com/Wildskytree/echem-analyzer"
+GITHUB_LATEST_RELEASE_API = (
+    "https://api.github.com/repos/Wildskytree/echem-analyzer/releases/latest"
+)
 
 
 class MainWindow(QMainWindow):
@@ -34,6 +42,7 @@ class MainWindow(QMainWindow):
         self._setup_central_widget()
         self._setup_statusbar()
         self._apply_theme()
+        self._check_for_updates()
 
     def _setup_window(self):
         """设置窗口基本属性。"""
@@ -301,7 +310,66 @@ class MainWindow(QMainWindow):
                          f"<p>电化学数据分析桌面工具</p>"
                          f"<p>技术栈: PySide6 + Matplotlib + NumPy/SciPy</p>"
                          f"<p>支持 LSV、CV、EIS、CA/CP 稳定性分析</p>"
+                         f"<p><b>GitHub:</b> "
+                         f"<a href='{GITHUB_REPOSITORY_URL}'>{GITHUB_REPOSITORY_URL}</a></p>"
                          f"<hr><p>© 2026 Echem Analyzer Team</p>")
+
+    def _check_for_updates(self):
+        """在后台检查 GitHub 最新 Release。"""
+        self._network_manager = QNetworkAccessManager(self)
+        request = QNetworkRequest(QUrl(GITHUB_LATEST_RELEASE_API))
+        request.setRawHeader(b"Accept", b"application/vnd.github+json")
+        request.setRawHeader(b"User-Agent", b"Echem-Analyzer")
+        reply = self._network_manager.get(request)
+        reply.finished.connect(lambda: self._handle_update_reply(reply))
+
+    def _handle_update_reply(self, reply: QNetworkReply):
+        """处理 GitHub 更新检测响应；失败时静默忽略。"""
+        try:
+            if reply.error() != QNetworkReply.NoError:
+                return
+
+            data = bytes(reply.readAll()).decode("utf-8")
+            payload = json.loads(data)
+            latest_version = str(payload.get("tag_name", "")).strip()
+            download_url = payload.get("html_url") or GITHUB_REPOSITORY_URL
+
+            if latest_version and self._is_newer_version(latest_version, APP_DISPLAY_VERSION):
+                QMessageBox.information(
+                    self,
+                    "发现新版本",
+                    f"<p>发现新版本: <b>{latest_version}</b></p>"
+                    f"<p>当前版本: {APP_DISPLAY_VERSION}</p>"
+                    f"<p>下载链接: <a href='{download_url}'>{download_url}</a></p>",
+                )
+        except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError):
+            return
+        finally:
+            reply.deleteLater()
+
+    @staticmethod
+    def _is_newer_version(candidate: str, current: str) -> bool:
+        """比较 vX.Y.Z 格式的版本号。"""
+        return MainWindow._version_tuple(candidate) > MainWindow._version_tuple(current)
+
+    @staticmethod
+    def _version_tuple(version: str) -> tuple[int, int, int]:
+        normalized = version.strip()
+        if normalized.lower().startswith("v"):
+            normalized = normalized[1:]
+        normalized = normalized.split("-", 1)[0]
+        parts = []
+        for part in normalized.split("."):
+            digits = ""
+            for char in part:
+                if char.isdigit():
+                    digits += char
+                else:
+                    break
+            parts.append(int(digits) if digits else 0)
+        while len(parts) < 3:
+            parts.append(0)
+        return tuple(parts[:3])
 
     def closeEvent(self, event):
         """窗口关闭事件。"""

@@ -4,13 +4,16 @@ import os
 import json
 from datetime import datetime
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-                               QLabel, QTextEdit, QMessageBox, QFileDialog,
+                               QLabel, QTextBrowser, QMessageBox, QFileDialog,
                                QGroupBox, QListWidget, QListWidgetItem,
                                QSplitter)
 from PySide6.QtCore import Qt
 
 from gui.app_info import APP_DISPLAY_VERSION
 from gui.widgets.analysis_common import scrollable_panel
+
+
+GITHUB_REPOSITORY_URL = "https://github.com/Wildskytree/echem-analyzer"
 
 
 class ProjectTab(QWidget):
@@ -62,8 +65,9 @@ class ProjectTab(QWidget):
         right_layout = QVBoxLayout(right)
         info_group = QGroupBox("ℹ️ 应用信息")
         info_layout = QVBoxLayout(info_group)
-        self.txt_info = QTextEdit()
+        self.txt_info = QTextBrowser()
         self.txt_info.setReadOnly(True)
+        self.txt_info.setOpenExternalLinks(True)
         self.txt_info.setHtml("""
         <h2>Echem Analyzer</h2>
         <p><b>版本:</b> {version}</p>
@@ -79,7 +83,12 @@ class ProjectTab(QWidget):
         </ul>
         <p><b>主要数据格式:</b> CHI Instruments (.txt), CSV</p>
         <p><b>快捷键:</b> Ctrl+O 导入文件, Ctrl+S 保存项目</p>
-        """.format(version=APP_DISPLAY_VERSION))
+        <hr>
+        <h3>GitHub</h3>
+        <p><b>仓库:</b> <a href="{repo_url}">{repo_url}</a></p>
+        <p>⭐ 欢迎在 GitHub 上 Star 和贡献代码</p>
+        <p><b>许可证:</b> MIT License</p>
+        """.format(version=APP_DISPLAY_VERSION, repo_url=GITHUB_REPOSITORY_URL))
         info_layout.addWidget(self.txt_info)
         right_layout.addWidget(info_group)
 
