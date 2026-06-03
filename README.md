@@ -85,7 +85,7 @@ echem_core/
 
 ## 🤝 贡献
 
-欢迎提交 Issue 和 PR：https://github.com/YOUR_GITHUB_USERNAME/echem-analyzer
+欢迎提交 Issue 和 PR：https://github.com/Wildskytree/echem-analyzer
 
 需要新仪器格式支持？请附上示例文件。
 
@@ -96,7 +96,6 @@ echem_core/
 - 微信赞赏码：
 
   <img src="assets/wechat_reward.jpg" alt="微信赞赏码" width="200"/>
-- 爱发电：`AFDIAN_SPONSOR_URL`
 
 ## 📄 License
 
