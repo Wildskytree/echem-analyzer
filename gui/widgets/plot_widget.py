@@ -1,6 +1,6 @@
 """Matplotlib 嵌入 PySide6 的绘图控件。
 
-根据运行环境自动选择后端：有显示器时用 Qt5Agg，否则用 Agg。
+根据运行环境自动选择后端：有显示器时用 QtAgg，否则用 Agg。
 """
 
 import os
@@ -10,11 +10,11 @@ import matplotlib
 if os.environ.get("QT_QPA_PLATFORM") == "offscreen" or not os.environ.get("DISPLAY"):
     matplotlib.use("Agg")
 else:
-    matplotlib.use("Qt5Agg")
+    matplotlib.use("QtAgg")
 
 from echem_core.plotting.fonts import configure_matplotlib_fonts
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 from PySide6.QtWidgets import QVBoxLayout, QWidget, QSizePolicy
 from PySide6.QtCore import Qt
