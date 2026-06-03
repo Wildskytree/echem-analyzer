@@ -12,3 +12,16 @@ build/
 .venv/
 venv/
 output/
+
+# 个人笔记/文献/隐私
+*.docx
+*.pdf
+monetization-*.md
+nife-ldh-aging-*
+komiya2026-*
+xps-raman-analysis.md
+code-review.md
+echem-analyzer-design.md
+build_windows.bat
+USER_GUIDE.md
+USER_GUIDE.txt
