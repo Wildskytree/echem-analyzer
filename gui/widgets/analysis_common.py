@@ -252,6 +252,40 @@ def export_table(table: QTableWidget, parent: QWidget, default_name: str):
         QMessageBox.critical(parent, "导出失败", f"无法导出 CSV:\n{exc}")
 
 
+def export_curve_data(
+    parent: QWidget,
+    default_filename: str,
+    columns: list[np.ndarray | list],
+    headers: list[str],
+) -> str | None:
+    """Export curve data as CSV. Returns the saved path or None."""
+    path, selected_filter = QFileDialog.getSaveFileName(
+        parent,
+        "导出曲线数据",
+        default_filename,
+        "CSV 文件 (*.csv);;文本文件 (*.txt)",
+    )
+    if not path:
+        return None
+    lower = path.lower()
+    if not lower.endswith((".csv", ".txt")):
+        path += ".csv"
+        lower = path.lower()
+
+    try:
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow(headers)
+            arrays = [np.asarray(col, dtype=float) for col in columns]
+            n = min(arr.size for arr in arrays)
+            for i in range(n):
+                writer.writerow([f"{arr[i]:.12g}" for arr in arrays])
+    except Exception as exc:
+        QMessageBox.critical(parent, "导出失败", f"无法导出曲线数据:\n{exc}")
+        return None
+    return path
+
+
 def format_float(value, digits: int = 4, scientific: bool = False) -> str:
     try:
         number = float(value)

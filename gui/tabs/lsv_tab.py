@@ -22,15 +22,27 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QLineEdit,
     QSizePolicy,
+    QDialog,
+    QDialogButtonBox,
 )
 from PySide6.QtCore import Qt
 
+from gui.widgets.multi_curve_overlay import (
+    CurveConfigCard,
+    CurveProcessingParams,
+    MultiCurveComparisonDialog,
+    apply_lsv_processing,
+    get_legend_label,
+    lsv_x_label as overlay_x_label,
+    lsv_y_label as overlay_y_label,
+)
 from gui.widgets.plot_widget import PlotWidget
 from gui.widgets.analysis_common import (
     apply_publication_style,
     configure_result_table,
     copy_table,
     derivative_xy,
+    export_curve_data,
     export_table,
     format_float,
     interpolate_at,
@@ -62,6 +74,9 @@ class LSVTab(QWidget):
         self._measurement = None
         self._fig_created = False
         self._last_rows = []
+        # 多曲线对比配置
+        self._comparison_mode = False
+        self._comparison_configs: dict[str, tuple[object, CurveProcessingParams]] = {}
         self._setup_ui()
 
     def _setup_ui(self):
@@ -209,17 +224,30 @@ class LSVTab(QWidget):
         self.spin_peak_start_potential.setSingleStep(0.01)
         self.spin_peak_start_potential.setValue(1.0)
         self.spin_peak_start_potential.setSuffix(" V")
-        self.chk_overlay = QCheckBox("多曲线叠加对比")
         self.chk_derivative = QCheckBox("计算微分曲线 dI/dE")
         self.chk_orr = QCheckBox("启用 ORR 专项分析")
         self.chk_orr.setChecked(True)
         analysis_layout.addRow("读取电位:", self.spin_read_potential)
         analysis_layout.addRow("峰检测起始电位:", self.spin_peak_start_potential)
-        analysis_layout.addRow("", self.chk_overlay)
         analysis_layout.addRow("", self.chk_derivative)
         analysis_layout.addRow("", self.chk_orr)
         analysis_group.setLayout(analysis_layout)
         left_layout.addWidget(analysis_group)
+
+        # ── 多曲线对比 ──
+        comparison_group = QGroupBox("多曲线对比")
+        comparison_layout = QVBoxLayout(comparison_group)
+        self.btn_comparison = QPushButton("📊 配置多曲线对比")
+        self.btn_comparison.clicked.connect(self._open_comparison_dialog)
+        comparison_layout.addWidget(self.btn_comparison)
+        self.lbl_comparison_status = QLabel("单数据模式")
+        self.lbl_comparison_status.setStyleSheet("color: #888; font-style: italic;")
+        comparison_layout.addWidget(self.lbl_comparison_status)
+        self.btn_exit_comparison = QPushButton("退出对比模式")
+        self.btn_exit_comparison.clicked.connect(self._exit_comparison_mode)
+        self.btn_exit_comparison.setVisible(False)
+        comparison_layout.addWidget(self.btn_exit_comparison)
+        left_layout.addWidget(comparison_group)
 
         self.btn_process = QPushButton("执行分析")
         self.btn_process.clicked.connect(self._run_analysis)
@@ -236,6 +264,9 @@ class LSVTab(QWidget):
         self.btn_export_plot = QPushButton("导出图表")
         self.btn_export_plot.clicked.connect(self._export_plot)
         self.btn_export_plot.setEnabled(False)
+        self.btn_export_curve = QPushButton("导出曲线数据 (CSV)")
+        self.btn_export_curve.clicked.connect(self._export_curve_data)
+        self.btn_export_curve.setEnabled(False)
         for btn in (
             self.btn_process,
             self.btn_detect_peaks,
@@ -243,6 +274,7 @@ class LSVTab(QWidget):
             self.btn_copy,
             self.btn_export_results,
             self.btn_export_plot,
+            self.btn_export_curve,
         ):
             left_layout.addWidget(btn)
         left_layout.addStretch()
@@ -295,6 +327,13 @@ class LSVTab(QWidget):
         self.cb_measurement.blockSignals(False)
         self._measurement = target
         self._update_selected_label()
+
+        # 数据变化时退出对比模式
+        if self._comparison_mode:
+            self._comparison_mode = False
+            self._comparison_configs = {}
+            self._update_comparison_ui()
+
         self._run_analysis(silent=True)
 
     def set_measurement(self, measurement):
@@ -314,11 +353,16 @@ class LSVTab(QWidget):
             self.lbl_selected.setToolTip(label)
 
     def _current_curve_set(self):
-        if self.chk_overlay.isChecked():
-            return list(self._lsv_measurements)
+        if self._comparison_mode:
+            return [
+                m for m in self._lsv_measurements
+                if CurveConfigCard._make_key(m) in self._comparison_configs
+                and self._comparison_configs[CurveConfigCard._make_key(m)][1].visible
+            ]
         return [self._measurement] if self._measurement is not None else []
 
     def _prepare_curve(self, measurement):
+        # 使用全局 UI 参数处理（对比模式由调用方自行处理）
         pot = np.asarray(
             measurement.processed_potential
             if measurement.processed_potential is not None
@@ -373,6 +417,13 @@ class LSVTab(QWidget):
         return pot, cur
 
     def _y_label(self):
+        # 对比模式下使用第一条可见曲线的参数决定坐标轴标签
+        if self._comparison_mode and self._comparison_configs:
+            visible = [
+                v[1] for v in self._comparison_configs.values() if v[1].visible
+            ]
+            if visible:
+                return overlay_y_label(visible[0])
         norm = self.cb_normalize.currentText()
         if norm.startswith("按面积"):
             return "j / mA cm⁻²"
@@ -381,10 +432,67 @@ class LSVTab(QWidget):
         return "I / A"
 
     def _x_label(self):
+        if self._comparison_mode and self._comparison_configs:
+            visible = [
+                v[1] for v in self._comparison_configs.values() if v[1].visible
+            ]
+            if visible:
+                return overlay_x_label(visible[0])
         return "E / V vs. RHE" if self.chk_to_rhe.isChecked() else "E / V"
 
     def _plot_title(self):
         return self.txt_plot_title.text().strip()
+
+    # ── 多曲线对比 ──
+
+    def _open_comparison_dialog(self, checked=False):
+        if not self._lsv_measurements:
+            QMessageBox.warning(self, "提示", "当前没有可用的 LSV 数据进行对比。")
+            return
+
+        dialog = MultiCurveComparisonDialog(
+            self._lsv_measurements, "LSV", self
+        )
+
+        # 如果已有配置，同步到对话框
+        if self._comparison_configs:
+            for card in dialog._cards:
+                key = card.measurement_key
+                if key in self._comparison_configs:
+                    card.update_from_params(self._comparison_configs[key][1])
+
+        if dialog.exec() == QDialog.Accepted:
+            self._comparison_configs = dialog.get_configurations()
+            visible = dialog.get_visible_configurations()
+            if not visible:
+                QMessageBox.warning(self, "提示", "没有选择任何可见曲线，请至少勾选一条。")
+                return
+            self._comparison_mode = True
+            self._update_comparison_ui()
+            self._run_analysis(silent=True)
+
+    def _exit_comparison_mode(self):
+        self._comparison_mode = False
+        self._comparison_configs = {}
+        self._update_comparison_ui()
+        self._run_analysis(silent=True)
+
+    def _update_comparison_ui(self):
+        if self._comparison_mode:
+            visible_count = sum(
+                1 for v in self._comparison_configs.values() if v[1].visible
+            )
+            self.lbl_comparison_status.setText(
+                f"🔵 对比模式 ({visible_count}/{len(self._lsv_measurements)} 条曲线)"
+            )
+            self.lbl_comparison_status.setStyleSheet(
+                "color: #1f77b4; font-weight: bold;"
+            )
+            self.btn_exit_comparison.setVisible(True)
+        else:
+            self.lbl_comparison_status.setText("单数据模式")
+            self.lbl_comparison_status.setStyleSheet("color: #888; font-style: italic;")
+            self.btn_exit_comparison.setVisible(False)
 
     def _detect_peaks(self, potential, current):
         try:
@@ -435,10 +543,25 @@ class LSVTab(QWidget):
             all_x = []
             all_y = []
             for measurement in curves:
-                pot, cur = self._prepare_curve(measurement)
+                # 对比模式下使用各自独立的处理参数
+                if self._comparison_mode:
+                    key = CurveConfigCard._make_key(measurement)
+                    cfg = self._comparison_configs.get(key)
+                    if cfg is not None:
+                        pot, cur = apply_lsv_processing(measurement, cfg[1])
+                    else:
+                        pot, cur = self._prepare_curve(measurement)
+                else:
+                    pot, cur = self._prepare_curve(measurement)
+                    cfg = None
                 all_x.append(pot)
                 all_y.append(cur)
-                ax.plot(pot, cur, linewidth=1.6, label=measurement_name(measurement))
+                # 对比模式下使用自定义标签
+                if self._comparison_mode:
+                    label = get_legend_label(measurement, cfg[1]) if cfg else measurement_name(measurement)
+                else:
+                    label = measurement_name(measurement)
+                ax.plot(pot, cur, linewidth=1.6, label=label)
 
             ax.set_xlabel(self._x_label())
             ax.set_ylabel(self._y_label())
@@ -489,10 +612,24 @@ class LSVTab(QWidget):
             dax = self.derivative_plot.ax
             derivative_drawn = False
             for measurement in curves:
-                pot, cur = self._prepare_curve(measurement)
+                # 对比模式下使用各自独立的处理参数
+                if self._comparison_mode:
+                    key = CurveConfigCard._make_key(measurement)
+                    cfg = self._comparison_configs.get(key)
+                    if cfg is not None:
+                        pot, cur = apply_lsv_processing(measurement, cfg[1])
+                    else:
+                        pot, cur = self._prepare_curve(measurement)
+                else:
+                    pot, cur = self._prepare_curve(measurement)
+                    cfg = None
                 try:
                     dpot, dcur = derivative_xy(pot, cur)
-                    dax.plot(dpot, dcur, linewidth=1.4, label=measurement_name(measurement))
+                    if self._comparison_mode:
+                        dlabel = get_legend_label(measurement, cfg[1]) if cfg else measurement_name(measurement)
+                    else:
+                        dlabel = measurement_name(measurement)
+                    dax.plot(dpot, dcur, linewidth=1.4, label=dlabel)
                     derivative_drawn = True
                 except Exception:
                     continue
@@ -514,6 +651,7 @@ class LSVTab(QWidget):
             set_table_rows(self.result_table, rows)
             self._fig_created = True
             self.btn_export_plot.setEnabled(True)
+            self.btn_export_curve.setEnabled(True)
         except Exception as exc:
             if not silent:
                 QMessageBox.critical(self, "分析错误", f"执行 LSV 分析时出错:\n{exc}")
@@ -547,6 +685,7 @@ class LSVTab(QWidget):
             self.plot_widget.refresh()
             self._fig_created = True
             self.btn_export_plot.setEnabled(True)
+            self.btn_export_curve.setEnabled(True)
         except Exception as exc:
             QMessageBox.critical(self, "峰检测失败", str(exc))
 
@@ -555,7 +694,12 @@ class LSVTab(QWidget):
         if not eis_measurements:
             QMessageBox.information(self, "未找到 EIS", "当前项目中没有可用于估算 Rs 的 EIS 数据。")
             return
-        measurement = eis_measurements[0]
+
+        selected = self._choose_eis_measurement(eis_measurements)
+        if selected is None:
+            return
+
+        measurement = selected
         meta = measurement.metadata
         z_real = np.asarray(meta.get("z_real", measurement.raw_current), dtype=float)
         frequency = np.asarray(meta.get("frequency", measurement.raw_potential), dtype=float)
@@ -566,6 +710,27 @@ class LSVTab(QWidget):
         self.spin_rs.setValue(float(rs))
         self.chk_ir.setChecked(True)
         QMessageBox.information(self, "已填入 Rs", f"已从 {measurement_name(measurement)} 估算 Rs = {rs:.4f} Ω。")
+
+    def _choose_eis_measurement(self, eis_measurements):
+        if len(eis_measurements) == 1:
+            return eis_measurements[0]
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("选择 EIS 数据")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("选择用于估算 Rs 的 EIS 数据:"))
+        cb = QComboBox()
+        for m in eis_measurements:
+            cb.addItem(measurement_label(m), m)
+        cb.setCurrentIndex(0)
+        layout.addWidget(cb)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return None
+        return cb.currentData()
 
     def _run_kl(self):
         rpm_curves = {}
@@ -617,6 +782,39 @@ class LSVTab(QWidget):
         current_plot = self.plot_tabs.currentWidget()
         if isinstance(current_plot, PlotWidget):
             current_plot.save_figure(path)
+
+    def _export_curve_data(self):
+        if self._measurement is None:
+            QMessageBox.warning(self, "提示", "请先选择 LSV 数据。")
+            return
+        curves = self._current_curve_set()
+        if not curves:
+            return
+
+        def _get_curve_data(measurement):
+            if self._comparison_mode:
+                key = CurveConfigCard._make_key(measurement)
+                cfg = self._comparison_configs.get(key)
+                if cfg is not None:
+                    return apply_lsv_processing(measurement, cfg[1])
+            return self._prepare_curve(measurement)
+
+        pot, cur = _get_curve_data(curves[0])
+        headers = ["Potential/V"]
+        columns = []
+        if len(curves) == 1:
+            headers = ["Potential/V", "Current/A"]
+            columns = [pot, cur]
+        else:
+            for i, measurement in enumerate(curves):
+                p, c = _get_curve_data(measurement)
+                if i == 0:
+                    columns.append(p)
+                else:
+                    columns.append(np.full_like(p, np.nan))
+                columns.append(c)
+                headers.append(f"Current_{measurement_name(measurement)}/A")
+        export_curve_data(self, "lsv_curve_data.csv", columns, headers)
 
     def get_current_data(self):
         if self._measurement is None:

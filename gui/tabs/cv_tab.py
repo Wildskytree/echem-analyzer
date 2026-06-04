@@ -13,11 +13,13 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                QSizePolicy, QMenu)
 from PySide6.QtCore import Qt
 
+from gui.widgets.multi_curve_overlay import CurveConfigCard, SimpleComparisonDialog
 from gui.widgets.plot_widget import PlotWidget
 from gui.widgets.analysis_common import (
     apply_publication_style,
     configure_result_table,
     copy_table,
+    export_curve_data,
     export_table,
     measurement_label,
     measurement_name,
@@ -43,6 +45,8 @@ class CVTab(QWidget):
         self._cv_measurements = []
         self._measurement = None
         self._cdl_measurements = []
+        self._comparison_mode = False
+        self._comparison_configs: dict[str, list[object]] = {}
         self._setup_ui()
 
     def _setup_ui(self):
@@ -86,9 +90,13 @@ class CVTab(QWidget):
         self.btn_export_results.clicked.connect(
             lambda: export_table(self.peak_table, self, "cv_peak_results.csv")
         )
+        self.btn_export_curve = QPushButton("导出曲线数据 (CSV)")
+        self.btn_export_curve.clicked.connect(self._export_curve_data)
+        self.btn_export_curve.setEnabled(False)
 
         left_layout.addWidget(self.btn_analyze)
         left_layout.addWidget(self.btn_export_plot)
+        left_layout.addWidget(self.btn_export_curve)
         left_layout.addWidget(self.btn_copy_results)
         left_layout.addWidget(self.btn_export_results)
 
@@ -113,6 +121,21 @@ class CVTab(QWidget):
         cycle_layout.addWidget(self.btn_split_by_voltage)
         cycle_group.setLayout(cycle_layout)
         left_layout.addWidget(cycle_group)
+
+        # ── 多曲线对比 ──
+        comparison_group = QGroupBox("多曲线对比")
+        comparison_layout = QVBoxLayout(comparison_group)
+        self.btn_comparison = QPushButton("📊 配置多曲线对比")
+        self.btn_comparison.clicked.connect(self._open_comparison_dialog)
+        comparison_layout.addWidget(self.btn_comparison)
+        self.lbl_comparison_status = QLabel("单数据模式")
+        self.lbl_comparison_status.setStyleSheet("color: #888; font-style: italic;")
+        comparison_layout.addWidget(self.lbl_comparison_status)
+        self.btn_exit_comparison = QPushButton("退出对比模式")
+        self.btn_exit_comparison.clicked.connect(self._exit_comparison_mode)
+        self.btn_exit_comparison.setVisible(False)
+        comparison_layout.addWidget(self.btn_exit_comparison)
+        left_layout.addWidget(comparison_group)
 
         # Cdl / ECSA 部分
         cdl_group = QGroupBox("Cdl / ECSA 计算")
@@ -221,6 +244,13 @@ class CVTab(QWidget):
         self.cb_measurement.blockSignals(False)
         self._measurement = target
         self._update_selected_label()
+
+        # 数据变化时退出对比模式
+        if self._comparison_mode:
+            self._comparison_mode = False
+            self._comparison_configs = {}
+            self._update_comparison_ui()
+
         self._plot_current_curve()
 
     def set_measurement(self, measurement):
@@ -239,6 +269,56 @@ class CVTab(QWidget):
             label = measurement_label(self._measurement)
             self.lbl_selected.setText(label)
             self.lbl_selected.setToolTip(label)
+
+    def _current_curve_set(self):
+        if self._comparison_mode:
+            return [
+                m for m in self._cv_measurements
+                if CurveConfigCard._make_key(m) in self._comparison_configs
+            ]
+        return [self._measurement] if self._measurement is not None else []
+
+    # ── 多曲线对比 ──
+
+    def _open_comparison_dialog(self, checked=False):
+        if not self._cv_measurements:
+            QMessageBox.warning(self, "提示", "当前没有可用的 CV 数据进行对比。")
+            return
+
+        dialog = SimpleComparisonDialog(self._cv_measurements, "CV", self)
+        if dialog.exec() == QDialog.Accepted:
+            visible = dialog.get_visible_measurements()
+            if not visible:
+                QMessageBox.warning(self, "提示", "没有选择任何可见曲线，请至少勾选一条。")
+                return
+            self._comparison_configs = {
+                CurveConfigCard._make_key(m): [m]
+                for m in visible
+            }
+            self._comparison_mode = True
+            self._update_comparison_ui()
+            self._plot_current_curve()
+
+    def _exit_comparison_mode(self):
+        self._comparison_mode = False
+        self._comparison_configs = {}
+        self._update_comparison_ui()
+        self._plot_current_curve()
+
+    def _update_comparison_ui(self):
+        if self._comparison_mode:
+            visible_count = len(self._comparison_configs)
+            self.lbl_comparison_status.setText(
+                f"🔵 对比模式 ({visible_count}/{len(self._cv_measurements)} 条曲线)"
+            )
+            self.lbl_comparison_status.setStyleSheet(
+                "color: #1f77b4; font-weight: bold;"
+            )
+            self.btn_exit_comparison.setVisible(True)
+        else:
+            self.lbl_comparison_status.setText("单数据模式")
+            self.lbl_comparison_status.setStyleSheet("color: #888; font-style: italic;")
+            self.btn_exit_comparison.setVisible(False)
 
     def _plot_title(self):
         return self.txt_plot_title.text().strip()
@@ -582,43 +662,62 @@ class CVTab(QWidget):
             QMessageBox.critical(self, "分圈失败", str(exc))
 
     def _plot_current_curve(self):
-        """Plot the selected CV curve without running peak detection."""
+        """Plot the selected CV curve(s) — supports multi-curve comparison."""
         if self._measurement is None:
             self.plot_widget.clear()
             self.plot_widget.refresh()
             self.peak_table.setRowCount(0)
             self._fig_created = False
             self.btn_export_plot.setEnabled(False)
+            self.btn_export_curve.setEnabled(False)
             self._set_cycle_export_enabled(False)
             return
 
         try:
-            m = self._measurement
-            pot = m.processed_potential if m.processed_potential is not None else m.raw_potential
-            cur = m.processed_current if m.processed_current is not None else m.raw_current
-
             self.plot_widget.clear()
             ax = self.plot_widget.ax
-            ax.plot(pot, cur, color="#1f77b4", linewidth=1.5, label=measurement_name(m))
+
+            if self._comparison_mode:
+                curves = self._current_curve_set()
+            else:
+                curves = [self._measurement]
+
+            all_x = []
+            all_y = []
+            for m in curves:
+                pot = m.processed_potential if m.processed_potential is not None else m.raw_potential
+                cur = m.processed_current if m.processed_current is not None else m.raw_current
+                pot = np.asarray(pot, dtype=float)
+                cur = np.asarray(cur, dtype=float)
+                all_x.append(pot)
+                all_y.append(cur)
+                ax.plot(pot, cur, linewidth=1.5, label=measurement_name(m))
+
             ax.set_xlabel("E / V")
             ax.set_ylabel("I / A")
             title = self._plot_title()
             if title:
                 ax.set_title(title)
             apply_publication_style(ax)
-            set_auto_limits(ax, pot, cur)
-            ax.legend(fontsize=8)
+            if all_x:
+                set_auto_limits(ax, np.concatenate(all_x), np.concatenate(all_y))
+
+            if len(curves) > 1:
+                ax.legend(fontsize=8)
+
             self.peak_table.setRowCount(0)
             self.plot_widget.refresh()
             self._fig_created = True
             self.btn_export_plot.setEnabled(True)
-            self._set_cycle_export_enabled(True)
+            self.btn_export_curve.setEnabled(True)
+            self._set_cycle_export_enabled(not self._comparison_mode)
         except Exception:
             self.plot_widget.clear()
             self.plot_widget.refresh()
             self.peak_table.setRowCount(0)
             self._fig_created = False
             self.btn_export_plot.setEnabled(False)
+            self.btn_export_curve.setEnabled(False)
             self._set_cycle_export_enabled(False)
 
     def _run_peak_analysis(self, checked=False, silent=False):
@@ -672,6 +771,7 @@ class CVTab(QWidget):
             self.plot_widget.refresh()
             self._fig_created = True
             self.btn_export_plot.setEnabled(True)
+            self.btn_export_curve.setEnabled(True)
 
         except Exception as e:
             if not silent:
@@ -797,6 +897,7 @@ class CVTab(QWidget):
             self.plot_widget.refresh()
             self._fig_created = True
             self.btn_export_plot.setEnabled(True)
+            self.btn_export_curve.setEnabled(True)
 
         except Exception as e:
             message = self._format_cdl_error(e)
@@ -839,6 +940,21 @@ class CVTab(QWidget):
         )
         if path:
             self.plot_widget.save_figure(path)
+
+    def _export_curve_data(self):
+        """Export CV curve data as CSV."""
+        if self._measurement is None:
+            QMessageBox.warning(self, "提示", "请先选择 CV 数据。")
+            return
+        try:
+            potential, current = self._current_cv_arrays()
+            export_curve_data(
+                self, "cv_curve_data.csv",
+                [potential, current],
+                ["Potential/V", "Current/A"],
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", str(exc))
 
     def add_cdl_measurement(self, measurement):
         """外部添加测量到 Cdl 列表。"""

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "echem-analyzer"
-version = "0.1.1"
+version = "0.1.2"
 description = "电化学数据处理工具 - Electrochemistry data analysis toolkit"
 readme = "README.md"
 requires-python = ">=3.8"

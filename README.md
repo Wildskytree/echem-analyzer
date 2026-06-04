@@ -14,6 +14,8 @@
 - **CV 分析** — 峰值识别、Cdl、ECSA
 - **EIS 分析** — Nyquist/Bode 图、Rs/Rct 估计
 - **期刊级图表** — ACS/RSC/Wiley 尺寸预设、色盲友好配色，导出 TIFF/PNG/SVG/PDF
+- **多曲线对比** — 每条曲线独立设置 RHE、iR、归一化、平滑参数，勾选控制显示/隐藏
+- **曲线数据导出** — 处理后数据一键导出 CSV
 - **批量处理** — 文件夹导入 → 统一 recipe → Excel 汇总 → 批量出图
 
 [📖 使用说明书](USER_GUIDE.md)

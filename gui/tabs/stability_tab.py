@@ -9,6 +9,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -32,6 +34,7 @@ from gui.widgets.analysis_common import (
     apply_publication_style,
     configure_result_table,
     copy_table,
+    export_curve_data,
     export_table,
     finite_xy,
     format_float,
@@ -42,6 +45,12 @@ from gui.widgets.analysis_common import (
     set_auto_limits,
     set_table_rows,
     technique_value,
+)
+from gui.widgets.multi_curve_overlay import (
+    CurveConfigCard,
+    SimpleComparisonDialog,
+    StabilityProcessingParams,
+    apply_stability_processing,
 )
 from gui.widgets.plot_widget import PlotWidget
 
@@ -55,6 +64,8 @@ class StabilityTab(QWidget):
         self._stability_measurements = []
         self._measurement = None
         self._fig_created = False
+        self._comparison_mode = False
+        self._comparison_configs: dict[str, tuple[object, StabilityProcessingParams]] = {}
         self._setup_ui()
 
     def _setup_ui(self):
@@ -137,8 +148,6 @@ class StabilityTab(QWidget):
         analysis_group = QGroupBox("分析选项")
         analysis_layout = QFormLayout()
         analysis_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        self.chk_overlay = QCheckBox("同类型多曲线叠加对比")
-        self.chk_overlay.setChecked(True)
         self.chk_abs_retention = QCheckBox("保持率使用绝对幅值")
         self.chk_abs_retention.setChecked(True)
         self.spin_segment_hours = QDoubleSpinBox()
@@ -146,7 +155,6 @@ class StabilityTab(QWidget):
         self.spin_segment_hours.setDecimals(2)
         self.spin_segment_hours.setValue(1.0)
         self.spin_segment_hours.setSuffix(" h")
-        analysis_layout.addRow("", self.chk_overlay)
         analysis_layout.addRow(
             labeled_help_widget(
                 self,
@@ -169,6 +177,21 @@ class StabilityTab(QWidget):
         analysis_group.setLayout(analysis_layout)
         left_layout.addWidget(analysis_group)
 
+        # ── 多曲线对比 ──
+        comparison_group = QGroupBox("多曲线对比")
+        comparison_layout = QVBoxLayout(comparison_group)
+        self.btn_comparison = QPushButton("📊 配置多曲线对比")
+        self.btn_comparison.clicked.connect(self._open_comparison_dialog)
+        comparison_layout.addWidget(self.btn_comparison)
+        self.lbl_comparison_status = QLabel("单数据模式")
+        self.lbl_comparison_status.setStyleSheet("color: #888; font-style: italic;")
+        comparison_layout.addWidget(self.lbl_comparison_status)
+        self.btn_exit_comparison = QPushButton("退出对比模式")
+        self.btn_exit_comparison.clicked.connect(self._exit_comparison_mode)
+        self.btn_exit_comparison.setVisible(False)
+        comparison_layout.addWidget(self.btn_exit_comparison)
+        left_layout.addWidget(comparison_group)
+
         self.btn_process = QPushButton("执行稳定性分析")
         self.btn_process.clicked.connect(self._run_analysis)
         self.btn_copy = QPushButton("复制当前表格")
@@ -184,12 +207,16 @@ class StabilityTab(QWidget):
         self.btn_export_plot = QPushButton("导出图表")
         self.btn_export_plot.clicked.connect(self._export_plot)
         self.btn_export_plot.setEnabled(False)
+        self.btn_export_curve = QPushButton("导出曲线数据 (CSV)")
+        self.btn_export_curve.clicked.connect(self._export_curve_data)
+        self.btn_export_curve.setEnabled(False)
         for btn in (
             self.btn_process,
             self.btn_copy,
             self.btn_export_results,
             self.btn_export_stats,
             self.btn_export_plot,
+            self.btn_export_curve,
         ):
             left_layout.addWidget(btn)
         left_layout.addStretch()
@@ -247,7 +274,6 @@ class StabilityTab(QWidget):
             self.spin_area,
             self.chk_ir,
             self.spin_rs,
-            self.chk_overlay,
             self.chk_abs_retention,
             self.spin_segment_hours,
         ):
@@ -279,6 +305,13 @@ class StabilityTab(QWidget):
         self.cb_measurement.blockSignals(False)
         self._measurement = target
         self._update_selected_label()
+
+        # 数据变化时退出对比模式
+        if self._comparison_mode:
+            self._comparison_mode = False
+            self._comparison_configs = {}
+            self._update_comparison_ui()
+
         self._run_analysis(silent=True)
 
     def set_measurement(self, measurement):
@@ -316,14 +349,58 @@ class StabilityTab(QWidget):
     def _current_curve_set(self):
         if self._measurement is None:
             return []
-        if not self.chk_overlay.isChecked():
-            return [self._measurement]
+        if self._comparison_mode:
+            return [
+                m for m in self._stability_measurements
+                if CurveConfigCard._make_key(m) in self._comparison_configs
+                and self._comparison_configs[CurveConfigCard._make_key(m)][1].visible
+            ]
+        return [self._measurement]
 
-        selected_tech = technique_value(self._measurement)
-        return [
-            m for m in self._stability_measurements
-            if technique_value(m) == selected_tech
-        ]
+    # ── 多曲线对比 ──
+
+    def _open_comparison_dialog(self, checked=False):
+        if not self._stability_measurements:
+            QMessageBox.warning(self, "提示", "当前没有可用的稳定性数据进行对比。")
+            return
+
+        dialog = SimpleComparisonDialog(
+            self._stability_measurements, "CA/CP", self
+        )
+        if dialog.exec() == QDialog.Accepted:
+            visible = dialog.get_visible_measurements()
+            if not visible:
+                QMessageBox.warning(self, "提示", "没有选择任何可见曲线，请至少勾选一条。")
+                return
+            # 构建配置映射
+            self._comparison_configs = {}
+            for m in visible:
+                key = CurveConfigCard._make_key(m)
+                self._comparison_configs[key] = (m, StabilityProcessingParams(visible=True))
+            self._comparison_mode = True
+            self._update_comparison_ui()
+            self._run_analysis(silent=True)
+
+    def _exit_comparison_mode(self):
+        self._comparison_mode = False
+        self._comparison_configs = {}
+        self._update_comparison_ui()
+        self._run_analysis(silent=True)
+
+    def _update_comparison_ui(self):
+        if self._comparison_mode:
+            visible_count = len(self._comparison_configs)
+            self.lbl_comparison_status.setText(
+                f"🔵 对比模式 ({visible_count}/{len(self._stability_measurements)} 条曲线)"
+            )
+            self.lbl_comparison_status.setStyleSheet(
+                "color: #1f77b4; font-weight: bold;"
+            )
+            self.btn_exit_comparison.setVisible(True)
+        else:
+            self.lbl_comparison_status.setText("单数据模式")
+            self.lbl_comparison_status.setStyleSheet("color: #888; font-style: italic;")
+            self.btn_exit_comparison.setVisible(False)
 
     def _time_scale(self):
         text = self.cb_time_unit.currentText()
@@ -346,6 +423,14 @@ class StabilityTab(QWidget):
         return "j" if self.cb_value_mode.currentIndex() == 1 else "I"
 
     def _prepare_curve(self, measurement):
+        # 如果在对比模式下且测量有独立参数，使用独立参数处理
+        if self._comparison_mode:
+            key = CurveConfigCard._make_key(measurement)
+            config = self._comparison_configs.get(key)
+            if config is not None:
+                return apply_stability_processing(measurement, config[1])
+
+        # 否则使用全局参数（默认行为）
         tech = technique_value(measurement)
         potential = np.asarray(
             measurement.processed_potential
@@ -556,6 +641,7 @@ class StabilityTab(QWidget):
             set_table_rows(self.result_table, [])
             set_table_rows(self.stats_table, [])
             self.btn_export_plot.setEnabled(False)
+            self.btn_export_curve.setEnabled(False)
             if not silent:
                 QMessageBox.warning(self, "提示", "请先选择 CA 或 CP 数据。")
             return
@@ -670,6 +756,7 @@ class StabilityTab(QWidget):
             set_table_rows(self.stats_table, stats_rows)
             self._fig_created = True
             self.btn_export_plot.setEnabled(True)
+            self.btn_export_curve.setEnabled(True)
         except Exception as exc:
             if not silent:
                 QMessageBox.critical(self, "分析错误", f"稳定性分析失败:\n{exc}")
@@ -680,7 +767,11 @@ class StabilityTab(QWidget):
             QMessageBox.information(self, "未找到 EIS", "当前项目中没有可用于估算 Rs 的 EIS 数据。")
             return
 
-        measurement = eis_measurements[0]
+        selected = self._choose_eis_measurement(eis_measurements)
+        if selected is None:
+            return
+
+        measurement = selected
         meta = measurement.metadata
         z_real = np.asarray(meta.get("z_real", measurement.raw_current), dtype=float)
         frequency = np.asarray(meta.get("frequency", measurement.raw_potential), dtype=float)
@@ -691,6 +782,27 @@ class StabilityTab(QWidget):
         self.spin_rs.setValue(float(rs))
         self.chk_ir.setChecked(True)
         QMessageBox.information(self, "已填入 Rs", f"已从 {measurement_name(measurement)} 估算 Rs = {rs:.4f} Ω。")
+
+    def _choose_eis_measurement(self, eis_measurements):
+        if len(eis_measurements) == 1:
+            return eis_measurements[0]
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("选择 EIS 数据")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("选择用于估算 Rs 的 EIS 数据:"))
+        cb = QComboBox()
+        for m in eis_measurements:
+            cb.addItem(measurement_label(m), m)
+        cb.setCurrentIndex(0)
+        layout.addWidget(cb)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return None
+        return cb.currentData()
 
     def _export_plot(self):
         if not self._fig_created:
@@ -706,6 +818,25 @@ class StabilityTab(QWidget):
         current_plot = self.plot_tabs.currentWidget()
         if isinstance(current_plot, PlotWidget):
             current_plot.save_figure(path)
+
+    def _export_curve_data(self):
+        """Export stability curve data as CSV."""
+        if self._measurement is None:
+            QMessageBox.warning(self, "提示", "请先选择 CA/CP 数据。")
+            return
+        try:
+            time_seconds, y, tech = self._prepare_curve(self._measurement)
+            rel_seconds = time_seconds - float(np.min(time_seconds))
+            time_scale, _time_label = self._time_scale()
+            plot_t = rel_seconds / time_scale
+            unit = self._y_label(tech).split("/")[-1].strip()
+            export_curve_data(
+                self, "stability_curve_data.csv",
+                [rel_seconds, plot_t, y],
+                ["Time/s", "Time_plot", f"Value/{unit}"],
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", str(exc))
 
     def get_current_data(self):
         if self._measurement is None:
